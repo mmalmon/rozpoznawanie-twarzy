@@ -17,20 +17,25 @@ podejrzenia sytuacji z wyprzedzeniem albo do debugowania.
 
 from __future__ import annotations
 
-from common.camera import list_available_cameras
+from common.camera import wykryj_dostepne_kamery
 
 
 def main() -> None:
     print("Szukam dostepnych kamer (indeksy 0-4)...\n")
-    cameras = list_available_cameras()
+    kamery = wykryj_dostepne_kamery()
 
-    if not cameras:
+    if not kamery:
         print("Nie znaleziono zadnej kamery. Sprawdz podlaczenie USB.")
         return
 
-    for cam in cameras:
-        hint = " <- prawdopodobnie RoWave RC16 (prawdziwe 4K)" if cam.is_likely_4k else ""
-        print(f"--kamera {cam.index}: maks. wykryta rozdzielczosc {cam.max_width}x{cam.max_height}{hint}")
+    for kamera in kamery:
+        podpowiedz = (
+            " <- prawdopodobnie RoWave RC16 (prawdziwe 4K)" if kamera.czy_prawdopodobnie_4k else ""
+        )
+        print(
+            f"--kamera {kamera.indeks}: maks. wykryta rozdzielczosc "
+            f"{kamera.maks_szerokosc}x{kamera.maks_wysokosc}{podpowiedz}"
+        )
 
 
 if __name__ == "__main__":

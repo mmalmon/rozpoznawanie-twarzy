@@ -1,13 +1,26 @@
 """
 Definicja modelu do rozpoznawania twarzy (klasyfikacja obrazu twarzy -> osoba).
 
-Uzywamy transfer learningu: bierzemy siec MobileNetV3-Small wytrenowana na
-ImageNet (1000 klas ogolnych obiektow) i podmieniamy jej ostatnia warstwe
-(klasyfikator) na nowa, dopasowana do liczby osob w naszej bazie. Dzieki temu:
-  - potrzebujemy dużo mniej danych treningowych (setki, a nie miliony zdjec),
-  - trening jest szybki nawet na laptopowym GPU z 6 GB VRAM,
-  - siec jest mala i szybka w inferencji (nadaje sie do pracy w czasie
-    rzeczywistym na strumieniu z kamery).
+DLA UCZNIOW - czym jest "transfer learning" (uczenie transferowe)?
+
+Zamiast trenowac siec neuronowa od zera (co wymagaloby milionow zdjec i
+tygodni obliczen), bierzemy siec MobileNetV3-Small, ktora zostala juz
+wczesniej wytrenowana przez kogos innego na ogromnym zbiorze ImageNet
+(1000 klas ogolnych obiektow: koty, psy, samochody, naczynia, itd.). Taka
+siec "nauczyla sie juz" wykrywac uniwersalne cechy wizualne - krawedzie,
+ksztalty, tekstury, kolory - ktore przydaja sie przy rozpoznawaniu
+praktycznie dowolnych obiektow, w tym twarzy.
+
+Robimy z nia dwie rzeczy:
+  1. Zamrazamy (nie trenujemy) wiekszosc jej warstw - tzw. "ekstraktor cech"
+     (backbone) - zostawiajac je dokladnie takie, jakie byly po treningu na
+     ImageNet.
+  2. Podmieniamy jej ostatnia warstwe (klasyfikator) na nowa, z liczba wyjsc
+     rowna liczbie osob w naszej bazie, i trenujemy TYLKO ta nowa warstwe na
+     naszych zdjeciach.
+
+Dzieki temu wystarczy 150-300 zdjec na osobe (zamiast milionow), a trening
+zajmuje minuty zamiast dni, nawet na sredniej klasy laptopowym GPU.
 """
 
 from __future__ import annotations
@@ -16,47 +29,79 @@ import torch
 from torch import nn
 from torchvision import models
 
-IMAGE_SIZE = 224  # standardowy rozmiar wejscia dla sieci trenowanych na ImageNet
+# Standardowy rozmiar wejscia (szerokosc x wysokosc w pikselach) dla sieci
+# trenowanych na zbiorze ImageNet - kazdy obraz musi zostac przeskalowany
+# do tego rozmiaru, zanim trafi do sieci.
+ROZMIAR_OBRAZU = 224
 
-# Srednia i odchylenie standardowe kanalow RGB uzyte przy treningu ImageNet -
-# musimy znormalizowac nasze obrazy dokladnie tak samo, jak zrobiono to przy
-# oryginalnym treningu backbone'u, inaczej wagi pretrenowane nie beda dzialac.
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
+# Srednia i odchylenie standardowe jasnosci kanalow R, G, B, wyliczone na
+# calym zbiorze ImageNet podczas oryginalnego treningu. Musimy znormalizowac
+# nasze obrazy DOKLADNIE w ten sam sposob - siec "widziala" podczas treningu
+# tylko dane w tym zakresie wartosci i inaczej znormalizowane obrazy
+# zaburzylyby jej dzialanie.
+SREDNIA_IMAGENET = [0.485, 0.456, 0.406]
+ODCHYLENIE_IMAGENET = [0.229, 0.224, 0.225]
 
 
-def build_model(num_classes: int, pretrained: bool = True, freeze_backbone: bool = True) -> nn.Module:
-    """Tworzy model MobileNetV3-Small z podmienionym klasyfikatorem koncowym."""
-    weights = models.MobileNet_V3_Small_Weights.DEFAULT if pretrained else None
-    model = models.mobilenet_v3_small(weights=weights)
+def zbuduj_model(
+    liczba_klas: int, pretrenowany: bool = True, zamroz_ekstraktor_cech: bool = True
+) -> nn.Module:
+    """Tworzy model MobileNetV3-Small z podmienionym klasyfikatorem koncowym.
 
-    if freeze_backbone:
-        # Zamrazamy wagi "ekstraktora cech" - trenujemy tylko nowy klasyfikator.
-        # To przyspiesza trening i zmniejsza ryzyko przeuczenia przy malym
-        # zbiorze danych (kilkaset zdjec na osobe).
-        for param in model.features.parameters():
-            param.requires_grad = False
+    liczba_klas: ile osob ma rozpoznawac model (tyle bedzie mial neuronow
+        wyjsciowych w ostatniej warstwie).
+    pretrenowany: czy zaladowac wagi wytrenowane wczesniej na ImageNet
+        (prawie zawsze chcemy True - to sedno transfer learningu).
+    zamroz_ekstraktor_cech: czy zablokowac trenowanie warstw ekstraktora cech
+        (zostawiajac je takimi, jakie byly po treningu na ImageNet) i
+        trenowac wylacznie nowy klasyfikator.
+    """
+    wagi = models.MobileNet_V3_Small_Weights.DEFAULT if pretrenowany else None
+    model = models.mobilenet_v3_small(weights=wagi)
 
-    in_features = model.classifier[-1].in_features
-    model.classifier[-1] = nn.Linear(in_features, num_classes)
+    if zamroz_ekstraktor_cech:
+        # "Zamrazanie" oznacza ustawienie requires_grad = False - PyTorch nie
+        # bedzie wtedy liczyl gradientow dla tych parametrow ani ich
+        # aktualizowal podczas treningu. Przyspiesza to trening i zmniejsza
+        # ryzyko przeuczenia przy malym zbiorze danych (kilkaset zdjec na osobe).
+        for parametr in model.features.parameters():
+            parametr.requires_grad = False
+
+    # Ostatnia warstwa oryginalnej sieci ma 1000 wyjsc (tyle, ile klas w
+    # ImageNet). Podmieniamy ja na nowa warstwe liniowa z liczba wyjsc rowna
+    # liczbie osob, ktore chcemy rozpoznawac.
+    liczba_cech_wejsciowych = model.classifier[-1].in_features
+    model.classifier[-1] = nn.Linear(liczba_cech_wejsciowych, liczba_klas)
 
     return model
 
 
-def unfreeze_backbone(model: nn.Module, last_n_blocks: int = 3) -> None:
-    """Odmraza ostatnie N blokow ekstraktora cech (fine-tuning drugiego etapu).
+def odmroz_ekstraktor_cech(model: nn.Module, liczba_ostatnich_blokow: int = 3) -> None:
+    """Odmraza (wlacza trenowanie) ostatnich N blokow ekstraktora cech -
+    tzw. fine-tuning (douczanie) drugiego etapu.
 
-    Wywolywane po kilku epokach treningu samego klasyfikatora - pozwala
-    lekko doszkolic gorne warstwy backbone'u pod nasze konkretne twarze,
-    zwykle podnoszac dokladnosc o kilka punktow procentowych.
+    DLA UCZNIOW: wywolujemy to po kilku epokach treningu samego
+    klasyfikatora. Pozwala to lekko doszkolic gorne (najbardziej
+    wyspecjalizowane) warstwy sieci pod nasze konkretne twarze, zamiast
+    polegac wylacznie na ogolnych cechach z ImageNet. Zwykle podnosi to
+    dokladnosc o kilka punktow procentowych, kosztem nieco dluzszego treningu.
     """
-    blocks = list(model.features.children())
-    for block in blocks[-last_n_blocks:]:
-        for param in block.parameters():
-            param.requires_grad = True
+    bloki = list(model.features.children())
+    for blok in bloki[-liczba_ostatnich_blokow:]:
+        for parametr in blok.parameters():
+            parametr.requires_grad = True
 
 
-def get_device() -> torch.device:
+def pobierz_urzadzenie() -> torch.device:
+    """Zwraca urzadzenie obliczeniowe, na ktorym powinien dzialac model:
+    kartę graficzna (GPU, jesli jest dostepna i obslugiwana przez CUDA) albo
+    procesor (CPU) w przeciwnym razie.
+
+    DLA UCZNIOW: trening sieci neuronowej to w gruncie rzeczy ogromna liczba
+    mnozen macierzy - GPU jest zaprojektowane do wykonywania wielu takich
+    mnozen rownolegle, dzieki czemu trening potrafi byc 10-50x szybszy niz
+    na CPU.
+    """
     if torch.cuda.is_available():
         return torch.device("cuda")
     print(

@@ -34,15 +34,15 @@ from pathlib import Path
 
 import cv2
 
-from common.camera import choose_camera_interactive, open_camera
-from common.face_detector import FaceDetector
-from common.imgio import imwrite_unicode
+from common.camera import otworz_kamere, wybierz_kamere_interaktywnie
+from common.face_detector import DetektorTwarzy
+from common.imgio import zapisz_obraz
 
-DATA_DIR = Path(__file__).parent / "data" / "raw"
-TARGET_SIZE = (224, 224)
+FOLDER_DANYCH = Path(__file__).parent / "data" / "raw"
+DOCELOWY_ROZMIAR = (224, 224)
 
 
-def parse_args() -> argparse.Namespace:
+def parsuj_argumenty() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Zbieranie zdjec twarzy do treningu.")
     parser.add_argument("--osoba", required=True, help="Identyfikator osoby, np. jan_kowalski")
     parser.add_argument(
@@ -62,77 +62,90 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args = parse_args()
+    argumenty = parsuj_argumenty()
 
-    person_dir = DATA_DIR / args.osoba
-    person_dir.mkdir(parents=True, exist_ok=True)
-    existing = len(list(person_dir.glob("*.jpg")))
+    folder_osoby = FOLDER_DANYCH / argumenty.osoba
+    folder_osoby.mkdir(parents=True, exist_ok=True)
+    liczba_juz_zebranych = len(list(folder_osoby.glob("*.jpg")))
 
-    kamera_index = args.kamera if args.kamera is not None else choose_camera_interactive()
-    cap = open_camera(kamera_index, width=args.szerokosc, height=args.wysokosc)
-    detector = FaceDetector()
+    indeks_kamery = (
+        argumenty.kamera if argumenty.kamera is not None else wybierz_kamere_interaktywnie()
+    )
+    kamera = otworz_kamere(indeks_kamery, szerokosc=argumenty.szerokosc, wysokosc=argumenty.wysokosc)
+    detektor = DetektorTwarzy()
 
-    saved = existing
-    auto_save = False
-    last_auto_save = 0.0
+    liczba_zapisanych = liczba_juz_zebranych
+    auto_zapis_wlaczony = False
+    czas_ostatniego_auto_zapisu = 0.0
 
-    print(f"[info] Zapisuje do: {person_dir}")
-    print(f"[info] Juz zebranych zdjec: {existing}. Cel: {args.cel}.")
+    print(f"[info] Zapisuje do: {folder_osoby}")
+    print(f"[info] Juz zebranych zdjec: {liczba_juz_zebranych}. Cel: {argumenty.cel}.")
     print("[info] SPACJA=zapisz  a=auto-zapis  q/ESC=koniec")
 
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
+            czy_odczytano, klatka = kamera.read()
+            if not czy_odczytano:
                 print("[blad] Nie udalo sie odczytac klatki z kamery.")
                 break
 
-            faces = detector.detect(frame)
-            preview = frame.copy()
+            wykryte_twarze = detektor.wykryj(klatka)
+            podglad = klatka.copy()
 
-            for face in faces:
+            # Ramka wokol wykrytej twarzy - tu juz jest zielona, bo to skrypt
+            # do ZBIERANIA danych treningowych, wiec przypomina uczniowi,
+            # ktora twarz zostanie zapisana po nacisnieciu spacji.
+            for twarz in wykryte_twarze:
                 cv2.rectangle(
-                    preview,
-                    (face.x, face.y),
-                    (face.x + face.w, face.y + face.h),
+                    podglad,
+                    (twarz.x, twarz.y),
+                    (twarz.x + twarz.w, twarz.y + twarz.h),
                     (0, 200, 0),
                     2,
                 )
 
-            status = f"Zebrano: {saved}/{args.cel}  auto={'ON' if auto_save else 'OFF'}"
-            cv2.putText(
-                preview, status, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 0), 2
+            pasek_stanu = (
+                f"Zebrano: {liczba_zapisanych}/{argumenty.cel}  "
+                f"auto={'ON' if auto_zapis_wlaczony else 'OFF'}"
             )
-            cv2.imshow("Zbieranie danych - RoWave RC16 (q=koniec)", preview)
+            cv2.putText(
+                podglad, pasek_stanu, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 0), 2
+            )
+            cv2.imshow("Zbieranie danych (q=koniec)", podglad)
 
-            key = cv2.waitKey(1) & 0xFF
-            should_save = key in (32, ord("s"))
+            klawisz = cv2.waitKey(1) & 0xFF
+            czy_zapisac_teraz = klawisz in (32, ord("s"))  # 32 = kod klawisza SPACJA
 
-            if key == ord("a"):
-                auto_save = not auto_save
-            if auto_save and faces and (time.time() - last_auto_save) > 0.3:
-                should_save = True
+            if klawisz == ord("a"):
+                auto_zapis_wlaczony = not auto_zapis_wlaczony
+            if (
+                auto_zapis_wlaczony
+                and wykryte_twarze
+                and (time.time() - czas_ostatniego_auto_zapisu) > 0.3
+            ):
+                czy_zapisac_teraz = True
 
-            if should_save and faces:
-                # Bierzemy najwieksza wykryta twarz (najblizej kamery) na wypadek,
-                # gdyby w kadrze bylo kilka osob.
-                face = max(faces, key=lambda f: f.w * f.h)
-                crop = face.crop(frame)
-                crop = cv2.resize(crop, TARGET_SIZE)
+            if czy_zapisac_teraz and wykryte_twarze:
+                # Jesli w kadrze jest kilka twarzy (np. ktos przechodzi w
+                # tle), bierzemy najwieksza - jest najblizej kamery, czyli
+                # najprawdopodobniej to osoba, ktora aktualnie pozuje do zdjec.
+                twarz = max(wykryte_twarze, key=lambda t: t.w * t.h)
+                wycinek = twarz.wytnij(klatka)
+                wycinek = cv2.resize(wycinek, DOCELOWY_ROZMIAR)
 
-                out_path = person_dir / f"{args.osoba}_{saved:04d}.jpg"
-                imwrite_unicode(out_path, crop)
-                saved += 1
-                last_auto_save = time.time()
-                print(f"[zapisano] {out_path.name} ({saved}/{args.cel})")
+                sciezka_pliku = folder_osoby / f"{argumenty.osoba}_{liczba_zapisanych:04d}.jpg"
+                zapisz_obraz(sciezka_pliku, wycinek)
+                liczba_zapisanych += 1
+                czas_ostatniego_auto_zapisu = time.time()
+                print(f"[zapisano] {sciezka_pliku.name} ({liczba_zapisanych}/{argumenty.cel})")
 
-            if saved >= args.cel:
+            if liczba_zapisanych >= argumenty.cel:
                 print("[info] Osiagnieto docelowa liczbe zdjec.")
                 break
-            if key in (ord("q"), 27):
+            if klawisz in (ord("q"), 27):
                 break
     finally:
-        cap.release()
+        kamera.release()
         cv2.destroyAllWindows()
 
 

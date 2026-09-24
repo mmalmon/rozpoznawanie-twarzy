@@ -1,6 +1,18 @@
 """
 Krok 3: Trening modelu rozpoznawania twarzy (transfer learning, PyTorch).
 
+DLA UCZNIOW - jak przebiega ten trening w dwoch etapach?
+
+  ETAP 1 (trening klasyfikatora): ekstraktor cech (backbone) jest zamrozony,
+    trenujemy tylko nowa, ostatnia warstwe siec. To szybkie i bezpieczne -
+    male ryzyko przeuczenia, nawet przy niewielkiej liczbie zdjec.
+
+  ETAP 2 (fine-tuning / douczanie): odmrazamy kilka ostatnich blokow
+    ekstraktora cech i douczamy je z bardzo malym wspolczynnikiem uczenia
+    (learning rate). To pozwala sieci lekko dostosowac sie do specyfiki
+    naszych twarzy, ale robimy to ostroznie, zeby nie "zepsuc" wartosciowej
+    wiedzy wyniesionej z treningu na ImageNet.
+
 Wymaga wczesniejszego uruchomienia:
     01_zbieranie_danych.py (dla kazdej osoby)
     02_podzial_danych.py
@@ -27,187 +39,253 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-from common.model import IMAGE_SIZE, IMAGENET_MEAN, IMAGENET_STD, build_model, get_device, unfreeze_backbone
+from common.model import (
+    ODCHYLENIE_IMAGENET,
+    ROZMIAR_OBRAZU,
+    SREDNIA_IMAGENET,
+    odmroz_ekstraktor_cech,
+    pobierz_urzadzenie,
+    zbuduj_model,
+)
 
-PROCESSED_DIR = Path(__file__).parent / "data" / "processed"
-MODELS_DIR = Path(__file__).parent / "models"
+FOLDER_PRZETWORZONYCH_DANYCH = Path(__file__).parent / "data" / "processed"
+FOLDER_MODELI = Path(__file__).parent / "models"
 
 
-def parse_args() -> argparse.Namespace:
+def parsuj_argumenty() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Trening modelu rozpoznawania twarzy.")
     parser.add_argument("--epoki", type=int, default=15, help="Liczba epok treningu klasyfikatora")
     parser.add_argument(
-        "--epoki-finetuning", type=int, default=8, help="Liczba epok fine-tuningu backbone'u"
+        "--epoki-finetuning", type=int, default=8, help="Liczba epok douczania (fine-tuningu) ekstraktora cech"
     )
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate klasyfikatora")
-    parser.add_argument("--lr-finetuning", type=float, default=1e-4, help="Learning rate fine-tuningu")
+    parser.add_argument("--batch-size", type=int, default=32, help="Ile zdjec naraz trafia do sieci podczas jednego kroku uczenia")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Wspolczynnik uczenia (learning rate) klasyfikatora")
+    parser.add_argument(
+        "--lr-finetuning", type=float, default=1e-4, help="Wspolczynnik uczenia dla etapu douczania (fine-tuningu)"
+    )
     return parser.parse_args()
 
 
-def build_dataloaders(batch_size: int) -> tuple[DataLoader, DataLoader, list[str]]:
-    # Augmentacje tylko dla zbioru treningowego - sztucznie "powiekszaja" dane,
-    # ucza siec ignorowac drobne odchylenia w oswietleniu/kadrowaniu/obrocie.
-    train_transform = transforms.Compose(
+def przygotuj_zbiory_danych(rozmiar_batcha: int) -> tuple[DataLoader, DataLoader, list[str]]:
+    """Przygotowuje ladowarki danych (DataLoader) dla zbioru treningowego
+    i walidacyjnego, wraz z lista rozpoznawanych osob (klas)."""
+
+    # DLA UCZNIOW - "augmentacja danych": sztucznie tworzymy nowe warianty
+    # tego samego zdjecia (odbicie lustrzane, lekki obrot, zmiana jasnosci
+    # i kontrastu). Dzieki temu ta sama twarz "wyglada" dla sieci troche
+    # inaczej za kazdym razem, co uczy ja ignorowac drobne, nieistotne
+    # roznice zamiast "zapamietywac" pojedyncze zdjecia. Augmentacje
+    # stosujemy TYLKO na zbiorze treningowym - zbior walidacyjny musi
+    # pozostac niezmieniony, bo sluzy do uczciwej oceny modelu.
+    przeksztalcenia_treningowe = transforms.Compose(
         [
-            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+            transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomRotation(10),
             transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
             transforms.ToTensor(),
-            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            transforms.Normalize(SREDNIA_IMAGENET, ODCHYLENIE_IMAGENET),
         ]
     )
-    val_transform = transforms.Compose(
+    przeksztalcenia_walidacyjne = transforms.Compose(
         [
-            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+            transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
             transforms.ToTensor(),
-            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            transforms.Normalize(SREDNIA_IMAGENET, ODCHYLENIE_IMAGENET),
         ]
     )
 
-    train_ds = datasets.ImageFolder(PROCESSED_DIR / "train", transform=train_transform)
-    val_ds = datasets.ImageFolder(PROCESSED_DIR / "val", transform=val_transform)
+    # ImageFolder automatycznie tworzy klasy na podstawie nazw podfolderow -
+    # np. data/processed/train/jan_kowalski/*.jpg -> klasa "jan_kowalski".
+    zbior_treningowy = datasets.ImageFolder(
+        FOLDER_PRZETWORZONYCH_DANYCH / "train", transform=przeksztalcenia_treningowe
+    )
+    zbior_walidacyjny = datasets.ImageFolder(
+        FOLDER_PRZETWORZONYCH_DANYCH / "val", transform=przeksztalcenia_walidacyjne
+    )
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2)
+    ladowarka_treningowa = DataLoader(
+        zbior_treningowy, batch_size=rozmiar_batcha, shuffle=True, num_workers=2
+    )
+    ladowarka_walidacyjna = DataLoader(
+        zbior_walidacyjny, batch_size=rozmiar_batcha, shuffle=False, num_workers=2
+    )
 
-    return train_loader, val_loader, train_ds.classes
+    return ladowarka_treningowa, ladowarka_walidacyjna, zbior_treningowy.classes
 
 
-def run_epoch(
+def wykonaj_epoke(
     model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    criterion: nn.Module,
-    optimizer: optim.Optimizer | None,
+    ladowarka: DataLoader,
+    urzadzenie: torch.device,
+    funkcja_straty: nn.Module,
+    optymalizator: optim.Optimizer | None,
 ) -> tuple[float, float]:
-    is_train = optimizer is not None
-    model.train(is_train)
+    """Wykonuje jeden pelny przebieg (epoke) po podanym zbiorze danych.
 
-    total_loss, correct, total = 0.0, 0, 0
-    with torch.set_grad_enabled(is_train):
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
+    Jesli podano optymalizator, jest to epoka TRENINGOWA (model uczy sie -
+    aktualizuje swoje wagi). Jesli optymalizator to None, jest to epoka
+    WALIDACYJNA (model tylko ocenia dane, bez uczenia sie na nich).
 
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+    Zwraca srednia wartosc funkcji straty (loss) oraz dokladnosc (accuracy)
+    na calym zbiorze.
+    """
+    czy_trening = optymalizator is not None
+    model.train(czy_trening)
 
-            if is_train:
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+    suma_straty, liczba_trafien, liczba_probek = 0.0, 0, 0
 
-            total_loss += loss.item() * images.size(0)
-            correct += (outputs.argmax(1) == labels).sum().item()
-            total += images.size(0)
+    # torch.set_grad_enabled(False) podczas walidacji wylacza liczenie
+    # gradientow - nie sa one potrzebne, gdy tylko oceniamy model, a ich
+    # pominiecie oszczedza pamiec i przyspiesza obliczenia.
+    with torch.set_grad_enabled(czy_trening):
+        for obrazy, etykiety in ladowarka:
+            obrazy, etykiety = obrazy.to(urzadzenie), etykiety.to(urzadzenie)
 
-    return total_loss / total, correct / total
+            wyniki = model(obrazy)
+            strata = funkcja_straty(wyniki, etykiety)
+
+            if czy_trening:
+                # Klasyczny "krok" uczenia sieci neuronowej metoda propagacji
+                # wstecznej (backpropagation):
+                optymalizator.zero_grad()  # 1. wyzeruj gradienty z poprzedniego kroku
+                strata.backward()  # 2. wylicz gradienty (jak zmienic wagi, by zmniejszyc strate)
+                optymalizator.step()  # 3. zaktualizuj wagi modelu
+
+            suma_straty += strata.item() * obrazy.size(0)
+            liczba_trafien += (wyniki.argmax(1) == etykiety).sum().item()
+            liczba_probek += obrazy.size(0)
+
+    return suma_straty / liczba_probek, liczba_trafien / liczba_probek
 
 
 def main() -> None:
-    args = parse_args()
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    argumenty = parsuj_argumenty()
+    FOLDER_MODELI.mkdir(parents=True, exist_ok=True)
 
-    if not (PROCESSED_DIR / "train").exists():
+    if not (FOLDER_PRZETWORZONYCH_DANYCH / "train").exists():
         raise SystemExit(
-            f"Brak danych w {PROCESSED_DIR}. Najpierw uruchom 02_podzial_danych.py."
+            f"Brak danych w {FOLDER_PRZETWORZONYCH_DANYCH}. Najpierw uruchom 02_podzial_danych.py."
         )
 
-    device = get_device()
-    train_loader, val_loader, classes = build_dataloaders(args.batch_size)
-    print(f"[info] Klasy ({len(classes)}): {classes}")
+    urzadzenie = pobierz_urzadzenie()
+    ladowarka_treningowa, ladowarka_walidacyjna, klasy = przygotuj_zbiory_danych(argumenty.batch_size)
+    print(f"[info] Klasy ({len(klasy)}): {klasy}")
 
-    model = build_model(num_classes=len(classes), pretrained=True, freeze_backbone=True)
-    model.to(device)
+    model = zbuduj_model(liczba_klas=len(klasy), pretrenowany=True, zamroz_ekstraktor_cech=True)
+    model.to(urzadzenie)
 
-    criterion = nn.CrossEntropyLoss()
+    # CrossEntropyLoss to standardowa funkcja straty dla klasyfikacji
+    # wieloklasowej - kara model tym mocniej, im bardziej byl "pewny"
+    # blednej odpowiedzi.
+    funkcja_straty = nn.CrossEntropyLoss()
 
-    history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
-    best_val_acc = 0.0
+    historia = {"strata_trening": [], "trafnosc_trening": [], "strata_walidacja": [], "trafnosc_walidacja": []}
+    najlepsza_trafnosc_walidacyjna = 0.0
 
-    # --- Etap 1: trening samego klasyfikatora (backbone zamrozony) ---
-    optimizer = optim.Adam(
-        (p for p in model.parameters() if p.requires_grad), lr=args.lr
+    # --- Etap 1: trening samego klasyfikatora (ekstraktor cech zamrozony) ---
+    optymalizator = optim.Adam(
+        (parametr for parametr in model.parameters() if parametr.requires_grad), lr=argumenty.lr
     )
-    print("\n[etap 1/2] Trening klasyfikatora (backbone zamrozony)")
-    for epoch in range(1, args.epoki + 1):
-        t0 = time.time()
-        train_loss, train_acc = run_epoch(model, train_loader, device, criterion, optimizer)
-        val_loss, val_acc = run_epoch(model, val_loader, device, criterion, None)
-        dt = time.time() - t0
+    print("\n[etap 1/2] Trening klasyfikatora (ekstraktor cech zamrozony)")
+    for numer_epoki in range(1, argumenty.epoki + 1):
+        czas_startu = time.time()
+        strata_trening, trafnosc_trening = wykonaj_epoke(
+            model, ladowarka_treningowa, urzadzenie, funkcja_straty, optymalizator
+        )
+        strata_walidacja, trafnosc_walidacja = wykonaj_epoke(
+            model, ladowarka_walidacyjna, urzadzenie, funkcja_straty, None
+        )
+        czas_trwania = time.time() - czas_startu
 
-        history["train_loss"].append(train_loss)
-        history["train_acc"].append(train_acc)
-        history["val_loss"].append(val_loss)
-        history["val_acc"].append(val_acc)
+        historia["strata_trening"].append(strata_trening)
+        historia["trafnosc_trening"].append(trafnosc_trening)
+        historia["strata_walidacja"].append(strata_walidacja)
+        historia["trafnosc_walidacja"].append(trafnosc_walidacja)
 
         print(
-            f"epoka {epoch:02d}/{args.epoki} | "
-            f"train_loss={train_loss:.3f} train_acc={train_acc:.3f} | "
-            f"val_loss={val_loss:.3f} val_acc={val_acc:.3f} | {dt:.1f}s"
+            f"epoka {numer_epoki:02d}/{argumenty.epoki} | "
+            f"strata_trening={strata_trening:.3f} trafnosc_trening={trafnosc_trening:.3f} | "
+            f"strata_walidacja={strata_walidacja:.3f} trafnosc_walidacja={trafnosc_walidacja:.3f} | "
+            f"{czas_trwania:.1f}s"
         )
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save(model.state_dict(), MODELS_DIR / "model_twarzy.pt")
+        # Zapisujemy model TYLKO wtedy, gdy poprawil sie wynik na zbiorze
+        # walidacyjnym - to gwarantuje, ze na koncu zostanie nam najlepsza
+        # (a nie ostatnia) wersja modelu, nawet jesli pozniej zaczalby sie
+        # przeuczac.
+        if trafnosc_walidacja > najlepsza_trafnosc_walidacyjna:
+            najlepsza_trafnosc_walidacyjna = trafnosc_walidacja
+            torch.save(model.state_dict(), FOLDER_MODELI / "model_twarzy.pt")
 
-    # --- Etap 2: fine-tuning ostatnich blokow backbone'u ---
-    if args.epoki_finetuning > 0:
-        print("\n[etap 2/2] Fine-tuning ostatnich warstw backbone'u")
-        unfreeze_backbone(model, last_n_blocks=3)
-        optimizer = optim.Adam(
-            (p for p in model.parameters() if p.requires_grad), lr=args.lr_finetuning
+    # --- Etap 2: fine-tuning (douczanie) ostatnich blokow ekstraktora cech ---
+    if argumenty.epoki_finetuning > 0:
+        print("\n[etap 2/2] Fine-tuning (douczanie) ostatnich warstw ekstraktora cech")
+        odmroz_ekstraktor_cech(model, liczba_ostatnich_blokow=3)
+        optymalizator = optim.Adam(
+            (parametr for parametr in model.parameters() if parametr.requires_grad),
+            lr=argumenty.lr_finetuning,
         )
 
-        for epoch in range(1, args.epoki_finetuning + 1):
-            t0 = time.time()
-            train_loss, train_acc = run_epoch(model, train_loader, device, criterion, optimizer)
-            val_loss, val_acc = run_epoch(model, val_loader, device, criterion, None)
-            dt = time.time() - t0
+        for numer_epoki in range(1, argumenty.epoki_finetuning + 1):
+            czas_startu = time.time()
+            strata_trening, trafnosc_trening = wykonaj_epoke(
+                model, ladowarka_treningowa, urzadzenie, funkcja_straty, optymalizator
+            )
+            strata_walidacja, trafnosc_walidacja = wykonaj_epoke(
+                model, ladowarka_walidacyjna, urzadzenie, funkcja_straty, None
+            )
+            czas_trwania = time.time() - czas_startu
 
-            history["train_loss"].append(train_loss)
-            history["train_acc"].append(train_acc)
-            history["val_loss"].append(val_loss)
-            history["val_acc"].append(val_acc)
+            historia["strata_trening"].append(strata_trening)
+            historia["trafnosc_trening"].append(trafnosc_trening)
+            historia["strata_walidacja"].append(strata_walidacja)
+            historia["trafnosc_walidacja"].append(trafnosc_walidacja)
 
             print(
-                f"epoka ft {epoch:02d}/{args.epoki_finetuning} | "
-                f"train_loss={train_loss:.3f} train_acc={train_acc:.3f} | "
-                f"val_loss={val_loss:.3f} val_acc={val_acc:.3f} | {dt:.1f}s"
+                f"epoka ft {numer_epoki:02d}/{argumenty.epoki_finetuning} | "
+                f"strata_trening={strata_trening:.3f} trafnosc_trening={trafnosc_trening:.3f} | "
+                f"strata_walidacja={strata_walidacja:.3f} trafnosc_walidacja={trafnosc_walidacja:.3f} | "
+                f"{czas_trwania:.1f}s"
             )
 
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                torch.save(model.state_dict(), MODELS_DIR / "model_twarzy.pt")
+            if trafnosc_walidacja > najlepsza_trafnosc_walidacyjna:
+                najlepsza_trafnosc_walidacyjna = trafnosc_walidacja
+                torch.save(model.state_dict(), FOLDER_MODELI / "model_twarzy.pt")
 
-    with open(MODELS_DIR / "klasy.json", "w", encoding="utf-8") as f:
-        json.dump(classes, f, ensure_ascii=False, indent=2)
+    # Zapisujemy liste klas (nazw osob) w tej samej kolejnosci, w jakiej
+    # widzial je model - bez tego nie moglibysmy pozniej odczytac, ktory
+    # numer wyjscia sieci odpowiada ktorej osobie.
+    with open(FOLDER_MODELI / "klasy.json", "w", encoding="utf-8") as plik:
+        json.dump(klasy, plik, ensure_ascii=False, indent=2)
 
-    print(f"\n[gotowe] Najlepsza dokladnosc walidacyjna: {best_val_acc:.3f}")
-    print(f"[gotowe] Model zapisany w: {MODELS_DIR / 'model_twarzy.pt'}")
+    print(f"\n[gotowe] Najlepsza dokladnosc walidacyjna: {najlepsza_trafnosc_walidacyjna:.3f}")
+    print(f"[gotowe] Model zapisany w: {FOLDER_MODELI / 'model_twarzy.pt'}")
 
+    # Rysujemy wykres krzywych uczenia - bardzo przydatny do dydaktyki:
+    # uczniowie moga na wlasne oczy zobaczyc, jak wyglada przeuczenie
+    # (train_acc rosnie, val_acc przestaje rosnac albo spada).
     try:
         import matplotlib.pyplot as plt
 
-        epochs_range = range(1, len(history["train_acc"]) + 1)
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        zakres_epok = range(1, len(historia["trafnosc_trening"]) + 1)
+        rysunek, osie = plt.subplots(1, 2, figsize=(10, 4))
 
-        axes[0].plot(epochs_range, history["train_loss"], label="train")
-        axes[0].plot(epochs_range, history["val_loss"], label="val")
-        axes[0].set_title("Loss")
-        axes[0].set_xlabel("epoka")
-        axes[0].legend()
+        osie[0].plot(zakres_epok, historia["strata_trening"], label="trening")
+        osie[0].plot(zakres_epok, historia["strata_walidacja"], label="walidacja")
+        osie[0].set_title("Funkcja straty (loss)")
+        osie[0].set_xlabel("epoka")
+        osie[0].legend()
 
-        axes[1].plot(epochs_range, history["train_acc"], label="train")
-        axes[1].plot(epochs_range, history["val_acc"], label="val")
-        axes[1].set_title("Accuracy")
-        axes[1].set_xlabel("epoka")
-        axes[1].legend()
+        osie[1].plot(zakres_epok, historia["trafnosc_trening"], label="trening")
+        osie[1].plot(zakres_epok, historia["trafnosc_walidacja"], label="walidacja")
+        osie[1].set_title("Dokladnosc (accuracy)")
+        osie[1].set_xlabel("epoka")
+        osie[1].legend()
 
-        fig.tight_layout()
-        fig.savefig(MODELS_DIR / "krzywe_uczenia.png")
-        print(f"[gotowe] Wykres krzywych uczenia: {MODELS_DIR / 'krzywe_uczenia.png'}")
+        rysunek.tight_layout()
+        rysunek.savefig(FOLDER_MODELI / "krzywe_uczenia.png")
+        print(f"[gotowe] Wykres krzywych uczenia: {FOLDER_MODELI / 'krzywe_uczenia.png'}")
     except ImportError:
         print("[uwaga] matplotlib niedostepny - pomijam wykres krzywych uczenia.")
 

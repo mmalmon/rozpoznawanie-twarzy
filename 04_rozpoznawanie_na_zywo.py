@@ -1,5 +1,5 @@
 """
-Krok 4: Rozpoznawanie twarzy na zywo z kamery RoWave RC16.
+Krok 4: Rozpoznawanie twarzy na zywo z kamery.
 
 Wymaga wczesniejszego wytrenowania modelu (03_trenowanie_modelu.py).
 
@@ -7,11 +7,20 @@ Uzycie:
     python 04_rozpoznawanie_na_zywo.py
     python 04_rozpoznawanie_na_zywo.py --prog-pewnosci 0.75
 
-Jesli pewnosc modelu dla najlepszej klasy jest ponizej progu (domyslnie 0.6),
-osoba oznaczana jest jako "Nieznana osoba" - to bardzo wazny mechanizm:
-siec zawsze zwroci "najbardziej prawdopodobna" klase spomiedzy tych, ktore
-widziala w treningu, nawet jesli w kadrze jest ktos zupelnie inny. Prog
-pewnosci pozwala odrzucic takie niepewne dopasowania.
+DLA UCZNIOW - dlaczego potrzebny jest "prog pewnosci"?
+
+Siec klasyfikujaca ZAWSZE zwroci "najbardziej prawdopodobna" osobe sposrod
+tych, ktore widziala podczas treningu - nawet jesli w kadrze jest ktos
+zupelnie inny, kogo model nigdy nie widzial! Dlatego oprocz samej
+przewidywanej klasy patrzymy tez na PEWNOSC modelu (prawdopodobienstwo
+z funkcji softmax). Jesli pewnosc jest ponizej ustalonego progu (domyslnie
+60%), pokazujemy etykiete "Nieznana osoba" zamiast zgadywac. To bardzo
+wazny mechanizm bezpieczenstwa w kazdym realnym systemie rozpoznawania
+twarzy.
+
+Kolory ramek:
+  - ZIELONA + imie   -> pewnosc modelu >= progu pewnosci (osoba rozpoznana),
+  - CZERWONA + "Nieznana osoba" -> pewnosc ponizej progu.
 """
 
 from __future__ import annotations
@@ -26,14 +35,18 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms
 
-from common.camera import choose_camera_interactive, open_camera
-from common.face_detector import FaceDetector
-from common.model import IMAGE_SIZE, IMAGENET_MEAN, IMAGENET_STD, build_model, get_device
+from common.camera import otworz_kamere, wybierz_kamere_interaktywnie
+from common.face_detector import DetektorTwarzy
+from common.model import ODCHYLENIE_IMAGENET, ROZMIAR_OBRAZU, SREDNIA_IMAGENET, pobierz_urzadzenie, zbuduj_model
 
-MODELS_DIR = Path(__file__).parent / "models"
+FOLDER_MODELI = Path(__file__).parent / "models"
+
+# Kolory ramek w formacie BGR (tak przechowuje kolory OpenCV - odwrotnie niz RGB).
+KOLOR_ROZPOZNANY = (0, 200, 0)  # zielony
+KOLOR_NIEZNANY = (0, 0, 220)  # czerwony
 
 
-def parse_args() -> argparse.Namespace:
+def parsuj_argumenty() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rozpoznawanie twarzy na zywo.")
     parser.add_argument(
         "--kamera",
@@ -47,104 +60,124 @@ def parse_args() -> argparse.Namespace:
         "--prog-pewnosci",
         type=float,
         default=0.6,
-        help="Minimalna pewnosc (0-1), ponizej ktorej osoba jest 'Nieznana'",
+        help="Minimalna pewnosc (0-1), ponizej ktorej osoba jest oznaczana jako 'Nieznana'",
     )
     return parser.parse_args()
 
 
-def load_model(device: torch.device) -> tuple[torch.nn.Module, list[str]]:
-    classes_path = MODELS_DIR / "klasy.json"
-    weights_path = MODELS_DIR / "model_twarzy.pt"
+def wczytaj_model(urzadzenie: torch.device) -> tuple[torch.nn.Module, list[str]]:
+    """Wczytuje wytrenowany model oraz liste rozpoznawanych osob z dysku."""
+    sciezka_klas = FOLDER_MODELI / "klasy.json"
+    sciezka_wag = FOLDER_MODELI / "model_twarzy.pt"
 
-    if not classes_path.exists() or not weights_path.exists():
+    if not sciezka_klas.exists() or not sciezka_wag.exists():
         raise SystemExit(
             "Brak wytrenowanego modelu. Najpierw uruchom 03_trenowanie_modelu.py."
         )
 
-    with open(classes_path, "r", encoding="utf-8") as f:
-        classes = json.load(f)
+    with open(sciezka_klas, "r", encoding="utf-8") as plik:
+        klasy = json.load(plik)
 
-    model = build_model(num_classes=len(classes), pretrained=False)
-    model.load_state_dict(torch.load(weights_path, map_location=device))
-    model.to(device)
+    model = zbuduj_model(liczba_klas=len(klasy), pretrenowany=False)
+    model.load_state_dict(torch.load(sciezka_wag, map_location=urzadzenie))
+    model.to(urzadzenie)
+    # Tryb .eval() wylacza mechanizmy uzywane tylko podczas treningu
+    # (np. dropout) - podczas rozpoznawania na zywo chcemy zawsze
+    # deterministycznego, "najlepszego" zachowania sieci.
     model.eval()
 
-    return model, classes
+    return model, klasy
 
 
 def main() -> None:
-    args = parse_args()
-    device = get_device()
+    argumenty = parsuj_argumenty()
+    urzadzenie = pobierz_urzadzenie()
 
-    model, classes = load_model(device)
-    detector = FaceDetector()
+    model, klasy = wczytaj_model(urzadzenie)
+    detektor = DetektorTwarzy()
 
-    preprocess = transforms.Compose(
+    # Przeksztalcenia musza byc IDENTYCZNE jak te uzyte przy walidacji modelu
+    # w kroku 3 (bez augmentacji losowych) - inaczej porownywalibysmy jablka
+    # z gruszkami.
+    przygotuj_obraz = transforms.Compose(
         [
             transforms.ToPILImage(),
-            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+            transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
             transforms.ToTensor(),
-            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            transforms.Normalize(SREDNIA_IMAGENET, ODCHYLENIE_IMAGENET),
         ]
     )
 
-    cap = open_camera(
-        args.kamera if args.kamera is not None else choose_camera_interactive(),
-        width=args.szerokosc,
-        height=args.wysokosc,
+    kamera = otworz_kamere(
+        argumenty.kamera if argumenty.kamera is not None else wybierz_kamere_interaktywnie(),
+        szerokosc=argumenty.szerokosc,
+        wysokosc=argumenty.wysokosc,
     )
 
     print("[info] Nacisnij 'q' lub ESC, aby zakonczyc.")
-    prev_time = time.time()
+    poprzedni_czas = time.time()
 
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
+            czy_odczytano, klatka = kamera.read()
+            if not czy_odczytano:
                 print("[blad] Nie udalo sie odczytac klatki z kamery.")
                 break
 
-            faces = detector.detect(frame)
+            wykryte_twarze = detektor.wykryj(klatka)
 
-            for face in faces:
-                crop = face.crop(frame, margin=0.2)
-                if crop.size == 0:
+            for twarz in wykryte_twarze:
+                wycinek = twarz.wytnij(klatka, margines=0.2)
+                if wycinek.size == 0:
                     continue
 
-                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                tensor = preprocess(crop_rgb).unsqueeze(0).to(device)
+                # OpenCV przechowuje obrazy w formacie BGR, a sieci
+                # neuronowe trenowane na ImageNet oczekuja formatu RGB -
+                # trzeba zamienic kolejnosc kanalow przed podaniem do modelu.
+                wycinek_rgb = cv2.cvtColor(wycinek, cv2.COLOR_BGR2RGB)
+                tensor_wejsciowy = przygotuj_obraz(wycinek_rgb).unsqueeze(0).to(urzadzenie)
 
+                # torch.no_grad() wylacza sledzenie gradientow - podczas
+                # samego rozpoznawania (inferencji) nie trenujemy modelu,
+                # wiec gradienty sa niepotrzebne i tylko zajmowalyby pamiec.
                 with torch.no_grad():
-                    logits = model(tensor)
-                    probs = F.softmax(logits, dim=1)[0]
-                    confidence, pred_idx = torch.max(probs, dim=0)
+                    surowe_wyniki = model(tensor_wejsciowy)
+                    # Funkcja softmax zamienia surowe wyniki sieci (tzw.
+                    # logity) na prawdopodobienstwa, ktore sumuja sie do 1.0
+                    # - dzieki temu mozemy mowic o "pewnosci" w procentach.
+                    prawdopodobienstwa = F.softmax(surowe_wyniki, dim=1)[0]
+                    pewnosc, indeks_klasy = torch.max(prawdopodobienstwa, dim=0)
 
-                confidence = confidence.item()
-                if confidence >= args.prog_pewnosci:
-                    label = f"{classes[pred_idx.item()]} ({confidence * 100:.0f}%)"
-                    color = (0, 200, 0)
+                pewnosc = pewnosc.item()
+                if pewnosc >= argumenty.prog_pewnosci:
+                    etykieta = f"{klasy[indeks_klasy.item()]} ({pewnosc * 100:.0f}%)"
+                    kolor_ramki = KOLOR_ROZPOZNANY
                 else:
-                    label = f"Nieznana osoba ({confidence * 100:.0f}%)"
-                    color = (0, 0, 220)
+                    etykieta = f"Nieznana osoba ({pewnosc * 100:.0f}%)"
+                    kolor_ramki = KOLOR_NIEZNANY
 
                 cv2.rectangle(
-                    frame, (face.x, face.y), (face.x + face.w, face.y + face.h), color, 2
+                    klatka,
+                    (twarz.x, twarz.y),
+                    (twarz.x + twarz.w, twarz.y + twarz.h),
+                    kolor_ramki,
+                    2,
                 )
                 cv2.putText(
-                    frame,
-                    label,
-                    (face.x, max(0, face.y - 10)),
+                    klatka,
+                    etykieta,
+                    (twarz.x, max(0, twarz.y - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7,
-                    color,
+                    kolor_ramki,
                     2,
                 )
 
-            now = time.time()
-            fps = 1.0 / max(1e-6, now - prev_time)
-            prev_time = now
+            teraz = time.time()
+            fps = 1.0 / max(1e-6, teraz - poprzedni_czas)
+            poprzedni_czas = teraz
             cv2.putText(
-                frame,
+                klatka,
                 f"FPS: {fps:.1f}",
                 (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -153,13 +186,13 @@ def main() -> None:
                 2,
             )
 
-            cv2.imshow("Rozpoznawanie twarzy - RoWave RC16 (q=koniec)", frame)
+            cv2.imshow("Rozpoznawanie twarzy (q=koniec)", klatka)
 
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
+            klawisz = cv2.waitKey(1) & 0xFF
+            if klawisz in (ord("q"), 27):
                 break
     finally:
-        cap.release()
+        kamera.release()
         cv2.destroyAllWindows()
 
 

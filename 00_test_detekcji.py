@@ -24,11 +24,11 @@ import time
 
 import cv2
 
-from common.camera import choose_camera_interactive, open_camera
-from common.face_detector import FaceDetector
+from common.camera import otworz_kamere, wybierz_kamere_interaktywnie
+from common.face_detector import DetektorTwarzy
 
 
-def parse_args() -> argparse.Namespace:
+def parsuj_argumenty() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Test detekcji twarzy na zywo.")
     parser.add_argument(
         "--kamera",
@@ -42,40 +42,48 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args = parse_args()
-    kamera_index = args.kamera if args.kamera is not None else choose_camera_interactive()
+    argumenty = parsuj_argumenty()
+    indeks_kamery = (
+        argumenty.kamera if argumenty.kamera is not None else wybierz_kamere_interaktywnie()
+    )
 
-    cap = open_camera(kamera_index, width=args.szerokosc, height=args.wysokosc)
-    detector = FaceDetector()
+    kamera = otworz_kamere(indeks_kamery, szerokosc=argumenty.szerokosc, wysokosc=argumenty.wysokosc)
+    detektor = DetektorTwarzy()
 
     print("[info] Nacisnij 'q' lub ESC, aby zakonczyc.")
-    prev_time = time.time()
+    poprzedni_czas = time.time()
 
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
+            czy_odczytano, klatka = kamera.read()
+            if not czy_odczytano:
                 print("[blad] Nie udalo sie odczytac klatki z kamery.")
                 break
 
-            faces = detector.detect(frame)
+            wykryte_twarze = detektor.wykryj(klatka)
 
-            for face in faces:
+            # Rysujemy ramke wokol kazdej wykrytej twarzy. Na tym etapie NIE
+            # wiemy jeszcze, kto to jest - dlatego ramka jest zolta i bez
+            # zadnego imienia (to bedzie krok 4, po wytrenowaniu modelu).
+            for twarz in wykryte_twarze:
                 cv2.rectangle(
-                    frame,
-                    (face.x, face.y),
-                    (face.x + face.w, face.y + face.h),
-                    (0, 220, 220),  # zolty (BGR) - to tylko test detekcji, bez rozpoznawania
+                    klatka,
+                    (twarz.x, twarz.y),
+                    (twarz.x + twarz.w, twarz.y + twarz.h),
+                    (0, 220, 220),  # kolor w formacie BGR (zolty)
                     2,
                 )
 
-            now = time.time()
-            fps = 1.0 / max(1e-6, now - prev_time)
-            prev_time = now
+            teraz = time.time()
+            # FPS (klatki na sekunde) liczymy jako odwrotnosc czasu miedzy
+            # kolejnymi klatkami - to standardowy sposob mierzenia plynnosci
+            # obrazu w aplikacjach czasu rzeczywistego.
+            fps = 1.0 / max(1e-6, teraz - poprzedni_czas)
+            poprzedni_czas = teraz
 
             cv2.putText(
-                frame,
-                f"Wykryto twarzy: {len(faces)}  FPS: {fps:.1f}",
+                klatka,
+                f"Wykryto twarzy: {len(wykryte_twarze)}  FPS: {fps:.1f}",
                 (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
@@ -83,13 +91,16 @@ def main() -> None:
                 2,
             )
 
-            cv2.imshow("Test detekcji twarzy - RoWave RC16 (q=koniec)", frame)
+            cv2.imshow("Test detekcji twarzy (q=koniec)", klatka)
 
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
+            klawisz = cv2.waitKey(1) & 0xFF
+            if klawisz in (ord("q"), 27):  # 27 = kod klawisza ESC
                 break
     finally:
-        cap.release()
+        # Zawsze zwalniamy kamere i zamykamy okna, nawet jesli program
+        # przerwal petle przez blad - inaczej kamera moglaby pozostac
+        # "zajeta" i kolejne uruchomienie skryptu by sie nie powiodlo.
+        kamera.release()
         cv2.destroyAllWindows()
 
 
