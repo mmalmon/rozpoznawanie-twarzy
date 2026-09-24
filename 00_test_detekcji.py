@@ -35,7 +35,7 @@ import cv2
 # Importujemy wlasne funkcje z folderu common/ (nasz "wspolny kod"
 # wykorzystywany przez kilka skryptow projektu, zeby nie powielac go w
 # kazdym pliku osobno).
-from common.camera import otworz_kamere, wybierz_kamere_interaktywnie
+from common.camera import dopasuj_do_ekranu, otworz_kamere, wybierz_kamere_interaktywnie
 from common.face_detector import DetektorTwarzy
 
 
@@ -72,6 +72,12 @@ def main() -> None:
 
     kamera = otworz_kamere(indeks_kamery, szerokosc=argumenty.szerokosc, wysokosc=argumenty.wysokosc)
     detektor = DetektorTwarzy()
+
+    # Patrz wyjasnienie flagi WINDOW_NORMAL w 04_rozpoznawanie_na_zywo.py -
+    # dzieki niej mozna recznie zmienic rozmiar okna, a obraz sam sie
+    # przeskaluje, bez przycinania.
+    nazwa_okna = "Test detekcji twarzy (q=koniec)"
+    cv2.namedWindow(nazwa_okna, cv2.WINDOW_NORMAL)
 
     print("[info] Nacisnij 'q' lub ESC, aby zakonczyc.")
     poprzedni_czas = time.time()
@@ -135,7 +141,9 @@ def main() -> None:
                 2,
             )
 
-            cv2.imshow("Test detekcji twarzy (q=koniec)", klatka)
+            # Skalujemy TYLKO obraz wyswietlany w oknie (nie wplywa to na
+            # detekcje powyzej) - patrz wyjasnienie w common/camera.py.
+            cv2.imshow(nazwa_okna, dopasuj_do_ekranu(klatka))
 
             klawisz = cv2.waitKey(1) & 0xFF
             if klawisz in (ord("q"), 27):  # 27 = kod klawisza ESC

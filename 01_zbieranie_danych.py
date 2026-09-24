@@ -40,7 +40,7 @@ from pathlib import Path
 import cv2
 
 # Wlasny kod z folderu common/.
-from common.camera import otworz_kamere, wybierz_kamere_interaktywnie
+from common.camera import dopasuj_do_ekranu, otworz_kamere, wybierz_kamere_interaktywnie
 from common.face_detector import DetektorTwarzy
 from common.imgio import zapisz_obraz
 
@@ -86,6 +86,12 @@ def main() -> None:
     )
     kamera = otworz_kamere(indeks_kamery, szerokosc=argumenty.szerokosc, wysokosc=argumenty.wysokosc)
     detektor = DetektorTwarzy()
+
+    # Patrz wyjasnienie flagi WINDOW_NORMAL w 04_rozpoznawanie_na_zywo.py -
+    # dzieki niej mozna recznie zmienic rozmiar okna, a obraz sam sie
+    # przeskaluje, bez przycinania.
+    nazwa_okna = "Zbieranie danych (q=koniec)"
+    cv2.namedWindow(nazwa_okna, cv2.WINDOW_NORMAL)
 
     liczba_zapisanych = liczba_juz_zebranych
     auto_zapis_wlaczony = False
@@ -134,7 +140,9 @@ def main() -> None:
             cv2.putText(
                 podglad, pasek_stanu, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 0), 2
             )
-            cv2.imshow("Zbieranie danych (q=koniec)", podglad)
+            # Skalujemy TYLKO obraz wyswietlany w oknie (nie wplywa to na
+            # zapisywane zdjecia powyzej) - patrz wyjasnienie w common/camera.py.
+            cv2.imshow(nazwa_okna, dopasuj_do_ekranu(podglad))
 
             klawisz = cv2.waitKey(1) & 0xFF
             # cv2.waitKey(1) czeka maksymalnie 1 milisekunde na nacisniecie

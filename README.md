@@ -361,6 +361,31 @@ mimo to się zdarza:
   twarz, sprawdźcie `min_rozmiar_wzgledny` w `common/face_detector.py` —
   zwiększenie go wymusza większe (a więc bardziej kompletne) wykrycia.
 
+**Podgląd z kamery wygląda na przycięty/przesunięty w prawo-dół, mimo że
+kamera "widzi" całą scenę.** To najczęściej NIE jest błąd w kodzie ani
+utrata danych z kamery, tylko skalowanie DPI Windows. Jeśli ekran ma
+włączone skalowanie (np. 125%/150% w Ustawienia > System > Ekran), a
+aplikacja nie zgłosi się jako "DPI aware", Windows sam przeskalowuje/przycina
+okna takiej aplikacji — dokładnie to wygląda jak "zły crop" obrazu z kamery.
+Ten projekt naprawia to automatycznie (`common/camera.py` wywołuje
+`ustaw_swiadomosc_dpi()` już przy starcie każdego skryptu), a dodatkowo:
+- Okno podglądu (`cv2.WINDOW_NORMAL`) można teraz swobodnie zmieniać
+  rozmiarem myszką (przeciągając krawędź/róg) — obraz automatycznie
+  skaluje się do nowego rozmiaru okna, bez przycinania.
+- Funkcja `dopasuj_do_ekranu()` w `common/camera.py` dodatkowo zmniejsza
+  (nigdy nie powiększa) obraz przy starcie, żeby okno od razu mieściło się
+  na ekranie, nawet gdy kamera pracuje w rozdzielczości większej niż ekran
+  (np. kamera 4K na ekranie Full HD).
+- Ważne: samo skalowanie/zmiana rozmiaru okna dotyczy WYŁĄCZNIE tego, co
+  widać na ekranie — detekcja i rozpoznawanie twarzy zawsze działają na
+  oryginalnej, pełnej klatce z kamery, więc jakość rozpoznawania się nie
+  zmienia.
+- Jeśli mimo to nadal brakuje kawałka sceny, to prawdopodobnie
+  ograniczenie fizyczne/sterownika samej kamery (np. domyślny cyfrowy
+  zoom/crop w ustawieniach kamery w Windows) — sprawdźcie Ustawienia >
+  Bluetooth i urządzenia > Kamery > [Wasza kamera] > Ustawienia
+  zaawansowane.
+
 ## Pomysły na rozszerzenie projektu (zadania dla uczniów)
 
 - Zamienić kaskadę Haara na nowocześniejszy detektor (np. MediaPipe Face

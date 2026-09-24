@@ -12,9 +12,33 @@ najwazniejsze to:
 
 Dlatego w tym module ZAWSZE wymuszamy tryb MJPG przed ustawieniem
 rozdzielczosci kamery.
+
+DLA UCZNIOW - "swiadomosc DPI" (DPI awareness) w Windows:
+Windows potrafi wyswietlac wszystko w wiekszej skali niz "fizyczna"
+rozdzielczosc ekranu (np. 125%, 150%) - dzieki temu tekst i ikony sa
+czytelne na ekranach o wysokiej gestosci pikseli. Problem w tym, ze jesli
+aplikacja (tutaj: nasz skrypt Pythona) NIE zglosi systemowi, ze "sama
+potrafi sie poprawnie przeskalowac", Windows automatycznie skaluje/przycina
+JEJ OKNA za nia (tzw. "DPI virtualization") - a to psuje geometrie obrazu z
+kamery wyswietlanego w oknie OpenCV: kadr wydaje sie przesuniety, przyciety
+z jednej strony i zle skalowany, mimo ze SUROWE dane z kamery (i sama
+detekcja/rozpoznawanie, ktore dzialaja na tych surowych danych, a nie na
+oknie) sa w 100% poprawne. Funkcja ustaw_swiadomosc_dpi() ponizej informuje
+Windows, ze nasz program sam zadba o poprawne skalowanie (czyli: wcale nie
+bedzie nic skalowal, wyswietli piksele "jeden do jednego") - dzieki temu
+okno podgladu pokazuje DOKLADNIE to, co widzi kamera.
 """
 
 from __future__ import annotations
+
+# ctypes pozwala Pythonowi wywolywac funkcje z bibliotek systemowych
+# napisanych w C/C++ (tu: user32.dll systemu Windows) - potrzebne do
+# wylaczenia automatycznego skalowania DPI okien naszej aplikacji (patrz
+# ustaw_swiadomosc_dpi() ponizej).
+import ctypes
+# sys - uzywamy tylko do sprawdzenia, czy program dziala na Windows
+# (sys.platform) - funkcja DPI ponizej jest specyficzna dla tego systemu.
+import sys
 
 # "from __future__ import annotations" to specjalny import techniczny (nie
 # zwykla biblioteka) - mowi Pythonowi, zeby traktowal adnotacje typow (np.
@@ -42,6 +66,54 @@ import cv2
 # kamera 4K (np. RoWave RC16), a nie zwykla kamera wbudowana w laptopa.
 PROBNA_SZEROKOSC_4K = 3840
 PROBNA_WYSOKOSC_4K = 2160
+
+
+def ustaw_swiadomosc_dpi() -> None:
+    """Informuje Windows, ze ten program sam zadba o poprawne skalowanie
+    swoich okien (patrz dlugie wyjasnienie DPI awareness w naglowku modulu).
+
+    Bez tego wywolania Windows moze automatycznie przeskalowac/przyciac
+    okno podgladu OpenCV, przez co obraz z kamery WYGLADA na przesuniety
+    lub przyciety, mimo ze same dane z kamery sa poprawne. Trzeba to
+    zrobic raz, na samym poczatku programu, ZANIM utworzone zostanie
+    jakiekolwiek okno (cv2.imshow) - dlatego wywolujemy ta funkcje juz przy
+    imporcie tego modulu (patrz linia z wywolaniem na koncu tego bloku), a
+    nie dopiero w otworz_kamere().
+    """
+    if sys.platform != "win32":
+        # Mechanizm DPI virtualization dotyczy tylko Windows - na innych
+        # systemach nie ma czego naprawiac.
+        return
+
+    try:
+        # SetProcessDpiAwareness(2) = "Per-Monitor DPI Aware" - najbardziej
+        # precyzyjny tryb, poprawnie obsluguje takze komputery z kilkoma
+        # monitorami o roznej skali. Ta funkcja istnieje dopiero od Windows
+        # 8.1 (biblioteka shcore.dll).
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            # Starszy, prostszy odpowiednik dostepny na kazdej wersji
+            # Windows (od Visty wzwyz) - gorzej radzi sobie z wieloma
+            # monitorami o roznej skali, ale dla pojedynczego ekranu
+            # laptopa dziala tak samo dobrze.
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            # Nie udalo sie ustawic swiadomosci DPI zadnym sposobem - nie
+            # przerywamy dzialania programu z tego powodu, tylko
+            # informujemy uczniow, ze podglad kamery moze wygladac na lekko
+            # przeskalowany/przyciety.
+            print(
+                "[uwaga] Nie udalo sie wylaczyc automatycznego skalowania "
+                "DPI Windows - podglad z kamery moze wygladac na przyciety "
+                "lub przesuniety."
+            )
+
+
+# Wywolujemy to JUZ TERAZ, przy pierwszym imporcie tego modulu (a wiec
+# zanim jakikolwiek skrypt zdazy otworzyc kamere czy okno podgladu) -
+# patrz pelne wyjasnienie w komentarzu funkcji powyzej.
+ustaw_swiadomosc_dpi()
 
 
 @dataclass
@@ -227,4 +299,63 @@ def otworz_kamere(
     )
 
     return kamera
+
+
+def dopasuj_do_ekranu(klatka, margines: float = 0.9):
+    """Skaluje klatke (JUZ z narysowanymi ramkami/napisami) w dol tak, aby
+    zmiescila sie na ekranie uzytkownika - ale TYLKO do wyswietlenia w oknie
+    podgladu (cv2.imshow). Nigdy nie powieksza obrazu, wiec na duzych
+    ekranach (np. 4K) klatka wyswietla sie bez zadnych zmian.
+
+    DLA UCZNIOW: to jest funkcja WYLACZNIE "kosmetyczna" - wywolujemy ja
+    w petli glownej dopiero PO detekcji i rozpoznawaniu twarzy, tuz przed
+    cv2.imshow(). Dzieki temu:
+      - sama detekcja/rozpoznawanie zawsze dziala na pelnej, oryginalnej
+        rozdzielczosci klatki z kamery (wiec jakosc rozpoznawania sie nie
+        zmienia),
+      - a okno podgladu nigdy nie jest wieksze niz ekran, wiec Windows nie
+        musi go samo "docinac"/przesuwac poza widoczny obszar (co wygladalo
+        jak przypadkowy crop/zle skalowanie obrazu).
+
+    Parametr "margines" (domyslnie 0.9 = 90% rozmiaru ekranu) zostawia
+    zapas miejsca na pasek tytulu okna, pasek zadan Windows itp.
+    """
+    if sys.platform != "win32":
+        # Na innych systemach nie mamy latwego, przenosnego sposobu na
+        # odczytanie rozdzielczosci ekranu bez dodatkowych bibliotek - po
+        # prostu nie skalujemy (uzytkownik moze recznie zmniejszyc okno).
+        return klatka
+
+    try:
+        # Po wywolaniu ustaw_swiadomosc_dpi() te wartosci to prawdziwa,
+        # fizyczna rozdzielczosc ekranu w pikselach (a nie pomniejszona
+        # przez skalowanie DPI Windows wartosc "logiczna").
+        szerokosc_ekranu = ctypes.windll.user32.GetSystemMetrics(0)
+        wysokosc_ekranu = ctypes.windll.user32.GetSystemMetrics(1)
+    except (AttributeError, OSError):
+        return klatka
+
+    if szerokosc_ekranu <= 0 or wysokosc_ekranu <= 0:
+        return klatka
+
+    wysokosc_klatki, szerokosc_klatki = klatka.shape[:2]
+
+    # Ile razy trzeba by pomniejszyc szerokosc i ile razy wysokosc, zeby
+    # klatka zmiescila sie w (margines * rozmiar ekranu) - bierzemy MNIEJSZY
+    # z tych dwoch wspolczynnikow, zeby zachowac proporcje obrazu (inaczej
+    # obraz wygladalby "rozciagniety").
+    skala = min(
+        (szerokosc_ekranu * margines) / szerokosc_klatki,
+        (wysokosc_ekranu * margines) / wysokosc_klatki,
+    )
+
+    if skala >= 1.0:
+        # Klatka i tak miesci sie na ekranie - nie ma czego zmniejszac.
+        return klatka
+
+    nowa_szerokosc = max(1, int(szerokosc_klatki * skala))
+    nowa_wysokosc = max(1, int(wysokosc_klatki * skala))
+    return cv2.resize(
+        klatka, (nowa_szerokosc, nowa_wysokosc), interpolation=cv2.INTER_AREA
+    )
 

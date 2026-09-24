@@ -49,7 +49,7 @@ import torch
 # musza byc identyczne jak przy liczeniu wzorcow w skrypcie 03.
 from torchvision import transforms
 
-from common.camera import otworz_kamere, wybierz_kamere_interaktywnie
+from common.camera import dopasuj_do_ekranu, otworz_kamere, wybierz_kamere_interaktywnie
 from common.face_detector import DetektorTwarzy
 from common.model import (
     ODCHYLENIE_IMAGENET,
@@ -173,6 +173,16 @@ def main() -> None:
         wysokosc=argumenty.wysokosc,
     )
 
+    # cv2.WINDOW_NORMAL (zamiast domyslnego cv2.WINDOW_AUTOSIZE) tworzy okno,
+    # ktore uczen moze recznie zmniejszyc/powiekszyc myszka (przeciagajac
+    # jego krawedz) - obraz z kamery automatycznie SKALUJE SIE do aktualnego
+    # rozmiaru okna, wiec nic nie jest przycinane. Bez tej flagi OpenCV
+    # tworzy okno o rozmiarze DOKLADNIE rownym rozmiarowi klatki, ktorego
+    # nie da sie zmniejszyc - a jesli klatka jest wieksza niz ekran, taki
+    # sztywny rozmiar okna wygladal jak przypadkowe przyciecie obrazu.
+    nazwa_okna = "Rozpoznawanie twarzy (q=koniec)"
+    cv2.namedWindow(nazwa_okna, cv2.WINDOW_NORMAL)
+
     print("[info] Nacisnij 'q' lub ESC, aby zakonczyc.")
     poprzedni_czas = time.time()
 
@@ -258,7 +268,12 @@ def main() -> None:
                 2,
             )
 
-            cv2.imshow("Rozpoznawanie twarzy (q=koniec)", klatka)
+            # dopasuj_do_ekranu() TYLKO zmniejsza obraz do wyswietlenia (jesli
+            # trzeba), zeby okno podgladu zmiescilo sie na ekranie - cala
+            # detekcja i rozpoznawanie powyzej dzialaly juz na pelnej,
+            # oryginalnej klatce z kamery, wiec ta linijka nie wplywa na
+            # jakosc rozpoznawania, tylko na wygode ogladania.
+            cv2.imshow(nazwa_okna, dopasuj_do_ekranu(klatka))
 
             klawisz = cv2.waitKey(1) & 0xFF
             if klawisz in (ord("q"), 27):
