@@ -17,6 +17,13 @@ podejrzenia sytuacji z wyprzedzeniem albo do debugowania.
 
 from __future__ import annotations
 
+# Ta linijka MUSI byc pierwszym kodem wykonywalnym w tym pliku - patrz
+# szczegolowe wyjasnienie w common/uruchom_w_venv.py (automatyczne
+# przelaczenie na Python z .venv, jesli uruchomiono innym interpreterem).
+from common.uruchom_w_venv import przelacz_na_venv_jesli_trzeba
+
+przelacz_na_venv_jesli_trzeba()
+
 # Importujemy wlasna funkcje z folderu common/ - ten sam kod, ktorego
 # uzywaja skrypty 00, 01 i 04 do wykrywania kamer podlaczonych do komputera.
 from common.camera import wykryj_dostepne_kamery

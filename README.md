@@ -142,6 +142,20 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 ```
 
+> **Uwaga dla uczniów — nie musisz pamiętać o aktywowaniu środowiska za
+> każdym razem.** Na komputerze może być kilka różnych instalacji Pythona
+> (np. Miniconda/Anaconda obok tego wirtualnego środowiska) — jeśli
+> uruchomisz skrypt zwykłym poleceniem `python 04_rozpoznawanie_na_zywo.py`
+> w terminalu, w którym akurat aktywny jest INNY Python (bez
+> zainstalowanego `cv2`/`torch`), zobaczysz błąd
+> `ModuleNotFoundError: No module named 'cv2'`. Każdy skrypt startowy tego
+> projektu (`00_*`...`04_*`, `listuj_kamery.py`,
+> `pobierz_zdjecia_nieznajomych.py`) sam to wykrywa i automatycznie
+> uruchamia się ponownie właściwym interpreterem z `.venv` — zobaczysz
+> wtedy tylko dodatkowy komunikat `[info] Uruchomiono przez... przelaczam
+> na wirtualne srodowisko projektu`. Mechanizm ten opisany jest w
+> [common/uruchom_w_venv.py](common/uruchom_w_venv.py).
+
 ### 2. Instalacja PyTorch z obsługą CUDA (GPU)
 
 Sprzęt z GPU Blackwell wymaga **aktualnej** wersji PyTorch z obsługą CUDA

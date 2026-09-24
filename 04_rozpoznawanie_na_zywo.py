@@ -30,6 +30,13 @@ Kolory ramek:
 
 from __future__ import annotations
 
+# Ta linijka MUSI byc pierwszym kodem wykonywalnym w tym pliku - patrz
+# szczegolowe wyjasnienie w common/uruchom_w_venv.py (automatyczne
+# przelaczenie na Python z .venv, jesli uruchomiono innym interpreterem).
+from common.uruchom_w_venv import przelacz_na_venv_jesli_trzeba
+
+przelacz_na_venv_jesli_trzeba()
+
 # argparse - obsluga argumentow uruchomieniowych (--kamera, --korekta-progu itd.).
 import argparse
 # json - do wczytania wzorcow tozsamosci (centroidow) i progow zapisanych

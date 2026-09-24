@@ -28,6 +28,13 @@ Wskazowki dla dobrej jakosci danych (patrz tez README.md):
 
 from __future__ import annotations
 
+# Ta linijka MUSI byc pierwszym kodem wykonywalnym w tym pliku - patrz
+# szczegolowe wyjasnienie w common/uruchom_w_venv.py (automatyczne
+# przelaczenie na Python z .venv, jesli uruchomiono innym interpreterem).
+from common.uruchom_w_venv import przelacz_na_venv_jesli_trzeba
+
+przelacz_na_venv_jesli_trzeba()
+
 # argparse - obsluga argumentow uruchomieniowych skryptu (--osoba, --kamera itd.).
 import argparse
 # time - do mierzenia uplywu czasu (np. czy minelo juz 0.3s od ostatniego

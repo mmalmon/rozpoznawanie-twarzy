@@ -19,6 +19,15 @@ Nacisnij 'q' lub ESC, aby zakonczyc.
 
 from __future__ import annotations
 
+# Ta linijka MUSI byc pierwszym kodem wykonywalnym w tym pliku (zaraz po
+# "from __future__" i komentarzach) - automatycznie przelacza program na
+# Python z wirtualnego srodowiska projektu (.venv), jesli zostal uruchomiony
+# innym Pythonem (np. globalna Miniconda), w ktorym nie ma zainstalowanego
+# cv2/torch. Pelne wyjasnienie w common/uruchom_w_venv.py.
+from common.uruchom_w_venv import przelacz_na_venv_jesli_trzeba
+
+przelacz_na_venv_jesli_trzeba()
+
 # argparse to modul standardowej biblioteki Pythona sluzacy do obslugi
 # argumentow uruchomieniowych skryptu (to, co wpisujemy po nazwie skryptu w
 # konsoli, np. "--kamera 1") - dzieki niemu nie musimy recznie parsowac
