@@ -1,5 +1,9 @@
 # Zaleznosci podstawowe (dziala na CPU od razu po instalacji)
-opencv-python>=4.9
+#
+# UWAGA: przypinamy opencv-python do galezi 4.x. Wersja 5.0.0 dostepna w PyPI
+# w chwili pisania tego tutorialu ma niekompletne bindingi Pythona - brakuje
+# w niej m.in. cv2.CascadeClassifier, uzywanego do detekcji twarzy.
+opencv-python>=4.9,<5.0
 numpy>=1.26
 Pillow>=10.0
 scikit-learn>=1.4

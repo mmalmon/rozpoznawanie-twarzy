@@ -15,7 +15,11 @@ jako "zadanie dodatkowe" w README.
 
 from __future__ import annotations
 
+import atexit
+import shutil
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -42,13 +46,37 @@ class FaceBox:
         return frame[y1:y2, x1:x2]
 
 
+def _load_cascade_safely(filename: str) -> cv2.CascadeClassifier:
+    """Wczytuje kaskade Haara w sposob odporny na polskie znaki w sciezce.
+
+    cv2.CascadeClassifier na Windows potrafi nie wczytac pliku, jesli jego
+    sciezka zawiera znaki spoza ASCII (np. gdy projekt lezy w folderze typu
+    "OneDrive - Zespół Szkół..."). Dlatego kopiujemy plik XML do katalogu
+    tymczasowego systemu (ktorego sciezka jest zazwyczaj czysto ASCII) i
+    wczytujemy kaskade juz stamtad.
+    """
+    source_path = Path(cv2.data.haarcascades) / filename
+
+    cascade = cv2.CascadeClassifier(str(source_path))
+    if not cascade.empty():
+        return cascade
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="haarcascade_"))
+    tmp_path = tmp_dir / filename
+    shutil.copyfile(source_path, tmp_path)
+    atexit.register(shutil.rmtree, tmp_dir, True)
+
+    cascade = cv2.CascadeClassifier(str(tmp_path))
+    if cascade.empty():
+        raise RuntimeError(
+            f"Nie udalo sie wczytac kaskady Haara ani z {source_path}, ani z kopii {tmp_path}"
+        )
+    return cascade
+
+
 class FaceDetector:
     def __init__(self, scale_factor: float = 1.1, min_neighbors: int = 6):
-        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        self.cascade = cv2.CascadeClassifier(cascade_path)
-        if self.cascade.empty():
-            raise RuntimeError(f"Nie udalo sie wczytac kaskady Haara z {cascade_path}")
-
+        self.cascade = _load_cascade_safely("haarcascade_frontalface_default.xml")
         self.scale_factor = scale_factor
         self.min_neighbors = min_neighbors
 

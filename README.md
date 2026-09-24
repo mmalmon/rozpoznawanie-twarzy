@@ -80,13 +80,16 @@ jest ktoś zupełnie inny. Dlatego jeśli pewność klasyfikacji jest niska
 
 ```
 rozpoznawanie twarzy/
+├── 00_test_detekcji.py          # krok 0: szybki test detekcji (bez rozpoznawania)
 ├── 01_zbieranie_danych.py       # krok 1: zbieranie zdjęć z kamery
 ├── 02_podzial_danych.py         # krok 2: podział na train/val
 ├── 03_trenowanie_modelu.py      # krok 3: trening sieci (transfer learning)
 ├── 04_rozpoznawanie_na_zywo.py  # krok 4: rozpoznawanie na żywo z kamery
+├── listuj_kamery.py             # pomocniczy: wypisuje dostępne kamery i ich rozdzielczości
 ├── common/
-│   ├── camera.py                # obsługa kamery RoWave RC16 (4K, UVC)
+│   ├── camera.py                # obsługa kamery (wybór, otwieranie, wymuszenie MJPG/4K)
 │   ├── face_detector.py         # detekcja twarzy (kaskada Haara)
+│   ├── imgio.py                 # zapis/odczyt zdjęć odporny na polskie znaki w ścieżce
 │   └── model.py                 # definicja modelu (transfer learning)
 ├── data/
 │   ├── raw/<osoba>/             # surowe zdjęcia z kamery (per osoba)
@@ -102,6 +105,16 @@ rozpoznawanie twarzy/
 Foldery `data/raw`, `data/processed` i `models` są celowo puste w
 repozytorium (`.gitignore`) — zawierają dane osobowe (zdjęcia twarzy) i
 duże pliki binarne, których nie powinno się trzymać w Git.
+
+> **Uwaga o ścieżce projektu:** biblioteka OpenCV na Windows ma problem z
+> odczytem/zapisem plików, gdy pełna ścieżka do projektu zawiera znaki
+> spoza ASCII (np. polskie „ł”, „ó” — jak w folderze
+> `OneDrive - Zespół Szkół...`). Kod w tym repo radzi sobie z tym
+> automatycznie (patrz [common/imgio.py](common/imgio.py) oraz mechanizm
+> awaryjnego kopiowania kaskady Haara w
+> [common/face_detector.py](common/face_detector.py)), więc nie trzeba
+> przenosić projektu do innego folderu — ale warto o tym pamiętać, pisząc
+> własny kod z `cv2.imread`/`cv2.imwrite`.
 
 ## Instalacja środowiska
 
@@ -157,7 +170,33 @@ widoczna, i zamknij inne aplikacje, które mogą jej używać (Kamera Windows,
 Teams, Zoom, OBS itd.) — tylko jedna aplikacja naraz może korzystać z
 kamery.
 
+Na laptopach z wbudowaną kamerą w systemie widoczne będą **co najmniej
+dwie kamery** — wbudowana i RoWave RC16. Wszystkie skrypty w projekcie
+(`00`, `01`, `04`) domyślnie same wykrywają dostępne kamery i **pytają w
+konsoli, której użyć** (kamera z wykrytą rozdzielczością 3840×2160 jest
+oznaczana jako najprawdopodobniej RoWave RC16). Możesz też pominąć to
+pytanie, podając indeks wprost, np. `--kamera 1`. Aby sprawdzić indeksy
+kamer z wyprzedzeniem, uruchom:
+
+```powershell
+python listuj_kamery.py
+```
+
 ## Tutorial krok po kroku
+
+### Krok 0 — szybki test detekcji (bez rozpoznawania)
+
+Zanim zaczniecie zbierać dane i trenować model, warto sprawdzić, że kamera
+i sama detekcja twarzy działają:
+
+```powershell
+python 00_test_detekcji.py
+```
+
+Powinno pojawić się okno podglądu z kamery z **żółtą ramką** wokół każdej
+wykrytej twarzy (bez żadnego imienia — na tym etapie system jeszcze nikogo
+nie rozpoznaje, tylko wykrywa, że w kadrze *jest jakaś* twarz). Naciśnij
+`q`, aby zakończyć.
 
 ### Krok 1 — zbieranie danych treningowych
 
@@ -257,6 +296,15 @@ Sprawdź, czy żadna inna aplikacja (Kamera, Teams, Zoom, przeglądarka z
 otwartą stroną wideokonferencji) nie korzysta z kamery. Spróbuj innego
 portu USB (najlepiej USB 3.0, kolor niebieski). Jeśli w systemie jest
 więcej niż jedna kamera, zmień `--kamera 1`, `--kamera 2` itd.
+
+**Program pyta o wybór kamery, ale i tak włącza się zła kamera (np. wbudowana
+zamiast RoWave RC16).**
+Uruchom `python listuj_kamery.py`, żeby zobaczyć indeksy i maksymalne
+rozdzielczości wszystkich wykrytych kamer — RoWave RC16 powinna pokazać
+prawdziwe `3840x2160`, a kamera wbudowana w laptop zwykle mniej (np.
+`2560x1440`, `1920x1080` czy `1280x720`). Zanotuj właściwy numer i podaj go
+jawnie, np. `python 00_test_detekcji.py --kamera 1` — wtedy program nie
+będzie pytał interaktywnie.
 
 **Bardzo niskie FPS podczas podglądu.**
 Upewnij się, że kamera pracuje w trybie MJPG (skrypt ustawia to

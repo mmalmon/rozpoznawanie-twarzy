@@ -26,7 +26,7 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms
 
-from common.camera import open_camera
+from common.camera import choose_camera_interactive, open_camera
 from common.face_detector import FaceDetector
 from common.model import IMAGE_SIZE, IMAGENET_MEAN, IMAGENET_STD, build_model, get_device
 
@@ -35,7 +35,12 @@ MODELS_DIR = Path(__file__).parent / "models"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rozpoznawanie twarzy na zywo.")
-    parser.add_argument("--kamera", type=int, default=0)
+    parser.add_argument(
+        "--kamera",
+        type=int,
+        default=None,
+        help="Indeks kamery. Jesli pominiety, program zapyta interaktywnie.",
+    )
     parser.add_argument("--szerokosc", type=int, default=1920)
     parser.add_argument("--wysokosc", type=int, default=1080)
     parser.add_argument(
@@ -83,7 +88,11 @@ def main() -> None:
         ]
     )
 
-    cap = open_camera(args.kamera, width=args.szerokosc, height=args.wysokosc)
+    cap = open_camera(
+        args.kamera if args.kamera is not None else choose_camera_interactive(),
+        width=args.szerokosc,
+        height=args.wysokosc,
+    )
 
     print("[info] Nacisnij 'q' lub ESC, aby zakonczyc.")
     prev_time = time.time()

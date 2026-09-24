@@ -3,7 +3,11 @@ Krok 1: Zbieranie materialu treningowego z kamery RoWave RC16.
 
 Uzycie:
     python 01_zbieranie_danych.py --osoba jan_kowalski
-    python 01_zbieranie_danych.py --osoba jan_kowalski --kamera 0 --cel 250
+    python 01_zbieranie_danych.py --osoba jan_kowalski --kamera 1 --cel 250
+
+Jesli nie podasz --kamera, program wykryje dostepne kamery i zapyta,
+ktorej uzyc (przydatne, gdy laptop ma zarowno kamere wbudowana, jak i
+RoWave RC16).
 
 Sterowanie w oknie podgladu:
     SPACJA / 's' - zapisz aktualnie wykryta twarz jako zdjecie treningowe
@@ -30,8 +34,9 @@ from pathlib import Path
 
 import cv2
 
-from common.camera import open_camera
+from common.camera import choose_camera_interactive, open_camera
 from common.face_detector import FaceDetector
+from common.imgio import imwrite_unicode
 
 DATA_DIR = Path(__file__).parent / "data" / "raw"
 TARGET_SIZE = (224, 224)
@@ -40,7 +45,12 @@ TARGET_SIZE = (224, 224)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Zbieranie zdjec twarzy do treningu.")
     parser.add_argument("--osoba", required=True, help="Identyfikator osoby, np. jan_kowalski")
-    parser.add_argument("--kamera", type=int, default=0, help="Indeks kamery (domyslnie 0)")
+    parser.add_argument(
+        "--kamera",
+        type=int,
+        default=None,
+        help="Indeks kamery. Jesli pominiety, program zapyta interaktywnie.",
+    )
     parser.add_argument("--cel", type=int, default=250, help="Docelowa liczba zdjec do zebrania")
     parser.add_argument(
         "--szerokosc", type=int, default=1920, help="Szerokosc podgladu z kamery (px)"
@@ -58,7 +68,8 @@ def main() -> None:
     person_dir.mkdir(parents=True, exist_ok=True)
     existing = len(list(person_dir.glob("*.jpg")))
 
-    cap = open_camera(args.kamera, width=args.szerokosc, height=args.wysokosc)
+    kamera_index = args.kamera if args.kamera is not None else choose_camera_interactive()
+    cap = open_camera(kamera_index, width=args.szerokosc, height=args.wysokosc)
     detector = FaceDetector()
 
     saved = existing
@@ -110,7 +121,7 @@ def main() -> None:
                 crop = cv2.resize(crop, TARGET_SIZE)
 
                 out_path = person_dir / f"{args.osoba}_{saved:04d}.jpg"
-                cv2.imwrite(str(out_path), crop)
+                imwrite_unicode(out_path, crop)
                 saved += 1
                 last_auto_save = time.time()
                 print(f"[zapisano] {out_path.name} ({saved}/{args.cel})")
