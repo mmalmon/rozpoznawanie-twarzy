@@ -1,17 +1,47 @@
 """
-Krok 3: Trening modelu rozpoznawania twarzy (transfer learning, PyTorch).
+Krok 3: Budowanie "wzorcow tozsamosci" (embeddingow) i kalibracja progu
+rozpoznawania.
 
-DLA UCZNIOW - jak przebiega ten trening w dwoch etapach?
+DLA UCZNIOW - dlaczego ten skrypt NIE trenuje juz klasycznego klasyfikatora?
 
-  ETAP 1 (trening klasyfikatora): ekstraktor cech (backbone) jest zamrozony,
-    trenujemy tylko nowa, ostatnia warstwe siec. To szybkie i bezpieczne -
-    male ryzyko przeuczenia, nawet przy niewielkiej liczbie zdjec.
+Pierwsza wersja tego projektu uczyla siec neuronowa odpowiadac na pytanie
+"kto z tych N znanych mi osob jest na zdjeciu" (klasyfikacja, softmax).
+W praktyce (czyli na zywym podgladzie z kamery) okazalo sie to zawodne:
+KAZDA nowa, prawdziwa osoba przed kamera byla rozpoznawana jako znana
+osoba. Powod: klasa "nieznajomy" byla zbudowana ze zdjec pobranych z
+internetu (inna ostrosc, kompresja, tlo studyjne) - siec nauczyla sie wiec
+odrozniac "ostre zdjecie z tego pokoju" od "rozmyte zdjecie z internetu"
+zamiast prawdziwych rysow twarzy. To klasyczny przyklad tzw. "uczenia sie
+skrotow" (shortcut learning) - siec zawsze znajdzie NAJLATWIEJSZY sposob
+na zminimalizowanie bledu na zbiorze treningowym, niekoniecznie ten, o ktory
+nam chodzilo.
 
-  ETAP 2 (fine-tuning / douczanie): odmrazamy kilka ostatnich blokow
-    ekstraktora cech i douczamy je z bardzo malym wspolczynnikiem uczenia
-    (learning rate). To pozwala sieci lekko dostosowac sie do specyfiki
-    naszych twarzy, ale robimy to ostroznie, zeby nie "zepsuc" wartosciowej
-    wiedzy wyniesionej z treningu na ImageNet.
+NOWE PODEJSCIE - rozpoznawanie przez PODOBIENSTWO (verification), a nie
+klasyfikacje zamknieta:
+  1. Bierzemy siec MobileNetV3-Small z wagami ImageNet, ale BEZ warstwy
+     klasyfikujacej na koncu (patrz common/model.py::zbuduj_ekstraktor_cech).
+     Ta siec NIGDY nie jest trenowana/douczana na naszych zdjeciach - jest
+     tylko "czytnikiem" zamieniajacym kazde zdjecie twarzy na wektor kilkuset
+     liczb (tzw. embedding), opisujacy jego wyglad.
+  2. Dla kazdej znanej osoby liczymy embeddingi wszystkich jej zdjec ze
+     zbioru treningowego i usredniamy je -> to jej "wzorzec" (centroid).
+  3. Uzywajac zbioru WALIDACYJNEGO (w tym takze zdjec klasy "nieznajomy",
+     jesli sa dostepne) sprawdzamy, jak podobne do wzorca sa: (a) zdjecia
+     TEJ SAMEJ osoby (powinny byc bardzo podobne) i (b) zdjecia
+     wszystkich INNYCH osob/nieznajomych (powinny byc mniej podobne).
+     Na tej podstawie automatycznie DOBIERAMY prog podobienstwa oddzielajacy
+     "to ta osoba" od "to ktos inny" - BEZ trenowania jakiejkolwiek warstwy
+     na tym porownaniu (uzywamy tych danych tylko do wyliczenia jednej,
+     prostej liczby - progu).
+
+Zaleta: poniewaz nigdy nie trenujemy zadnej wagi na parze (moja twarz vs
+zdjecia z internetu), nie ma jak "nauczyc sie na skrotow" mylacej roznicy w
+stylu zdjec - o dopasowaniu decyduje wylacznie ogolna wiedza sieci o
+obrazach, wyniesiona z treningu na milionach zdjec ImageNet. Dodatkowa
+zaleta praktyczna: dodanie NOWEJ osoby do systemu nie wymaga juz zadnego
+"treningu" (minut oczekiwania) - wystarczy policzyc jej embeddingi (sekundy),
+co bedzie kluczowe przy planowanym pozniej automatycznym zapisywaniu nowych
+osob przez system (rozpoznawanie mowy + synteza mowy).
 
 Wymaga wczesniejszego uruchomienia:
     01_zbieranie_danych.py (dla kazdej osoby)
@@ -19,203 +49,247 @@ Wymaga wczesniejszego uruchomienia:
 
 Uzycie:
     python 03_trenowanie_modelu.py
-    python 03_trenowanie_modelu.py --epoki 20 --batch-size 32
+    python 03_trenowanie_modelu.py --margines-bezpieczenstwa 0.05
 
 Wynik:
-    models/model_twarzy.pt   - wagi wytrenowanego modelu
-    models/klasy.json        - mapowanie indeks -> nazwa osoby
-    models/krzywe_uczenia.png - wykres accuracy/loss w czasie
+    models/wzorce_osob.json     - wzorce (centroidy) + skalibrowane progi
+    models/kalibracja_progu.png - wykres pomagajacy zrozumiec dobor progu
 """
 
 from __future__ import annotations
 
-# argparse - obsluga argumentow uruchomieniowych (--epoki, --batch-size itd.).
+# argparse - obsluga argumentow uruchomieniowych (--margines-bezpieczenstwa itd.).
 import argparse
-# json - zapis/odczyt danych w formacie JSON (tu: listy nazw rozpoznawanych
-# osob, zeby skrypt 04 wiedzial, ktory numer wyjscia sieci odpowiada ktorej
-# osobie).
+# json - zapis wzorcow tozsamosci (embeddingow) i progow w czytelnym,
+# tekstowym formacie, ktory potem odczyta skrypt 04.
 import json
-# time - do mierzenia, ile trwala kazda epoka treningu.
-import time
 # Path - obiektowa reprezentacja sciezek plikow/folderow.
 from pathlib import Path
 
 # torch - glowny silnik PyTorch do obliczen na tensorach (tablicach
-# wielowymiarowych) i budowy/trenowania sieci neuronowych.
+# wielowymiarowych), tutaj uzywany wylacznie do "odczytu" (inferencji) -
+# nie trenujemy juz zadnej sieci w tym skrypcie.
 import torch
-# nn - "klocki" do budowy sieci (funkcje straty itp.).
-# optim - podmodul z algorytmami optymalizacji (tu: Adam), czyli metodami
-# aktualizacji wag sieci na podstawie wyliczonych gradientow.
-from torch import nn, optim
 # DataLoader automatycznie dzieli caly zbior danych na mniejsze paczki
-# (batch) i w tle rownolegle wczytuje/przygotowuje kolejne paczki, zeby
-# karta graficzna nigdy nie czekala bezczynnie na dane.
+# (batch) i w tle rownolegle wczytuje/przygotowuje kolejne paczki - tutaj
+# przyspiesza to liczenie embeddingow dla setek zdjec naraz.
 from torch.utils.data import DataLoader
 # datasets.ImageFolder to gotowa klasa z torchvision, ktora automatycznie
 # wczytuje zdjecia z folderow (klasa = nazwa podfolderu). transforms to
-# zestaw gotowych przeksztalcen obrazu (zmiana rozmiaru, augmentacja,
-# normalizacja) stosowanych przed podaniem zdjecia do sieci.
+# zestaw gotowych przeksztalcen obrazu (zmiana rozmiaru, normalizacja).
 from torchvision import datasets, transforms
 
 from common.model import (
     ODCHYLENIE_IMAGENET,
     ROZMIAR_OBRAZU,
     SREDNIA_IMAGENET,
-    odmroz_ekstraktor_cech,
+    oblicz_znormalizowane_cechy,
     pobierz_urzadzenie,
-    zbuduj_model,
+    zbuduj_ekstraktor_cech,
 )
 
 FOLDER_PRZETWORZONYCH_DANYCH = Path(__file__).parent / "data" / "processed"
 FOLDER_MODELI = Path(__file__).parent / "models"
 
+# Nazwa folderu klasy "nieznajomy" (patrz pobierz_zdjecia_nieznajomych.py) -
+# to NIE jest prawdziwa, rozpoznawana osoba, wiec pomijamy ja przy liczeniu
+# wzorcow (centroidow), ale WYKORZYSTUJEMY jej zdjecia jako dodatkowy,
+# "trudny" material do kalibracji progu (patrz funkcja skalibruj_progi).
+NAZWA_KLASY_NIEZNAJOMY = "nieznajomy"
+
 
 def parsuj_argumenty() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Trening modelu rozpoznawania twarzy.")
-    parser.add_argument("--epoki", type=int, default=15, help="Liczba epok treningu klasyfikatora")
-    parser.add_argument(
-        "--epoki-finetuning", type=int, default=8, help="Liczba epok douczania (fine-tuningu) ekstraktora cech"
+    parser = argparse.ArgumentParser(
+        description="Budowanie wzorcow tozsamosci (embeddingow) i kalibracja progu rozpoznawania."
     )
-    parser.add_argument("--batch-size", type=int, default=32, help="Ile zdjec naraz trafia do sieci podczas jednego kroku uczenia")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Wspolczynnik uczenia (learning rate) klasyfikatora")
+    parser.add_argument("--batch-size", type=int, default=32, help="Ile zdjec naraz trafia do sieci przy liczeniu embeddingow")
     parser.add_argument(
-        "--lr-finetuning", type=float, default=1e-4, help="Wspolczynnik uczenia dla etapu douczania (fine-tuningu)"
+        "--margines-bezpieczenstwa",
+        type=float,
+        default=0.03,
+        help=(
+            "O ile podniesc automatycznie wyliczony prog podobienstwa "
+            "(wieksza wartosc = trudniej o falszywe rozpoznanie obcej "
+            "osoby, ale latwiej o odrzucenie znanej osoby w gorszych "
+            "warunkach oswietlenia)"
+        ),
     )
     return parser.parse_args()
 
 
-def przygotuj_zbiory_danych(rozmiar_batcha: int) -> tuple[DataLoader, DataLoader, list[str]]:
-    """Przygotowuje ladowarki danych (DataLoader) dla zbioru treningowego
-    i walidacyjnego, wraz z lista rozpoznawanych osob (klas)."""
+def przygotuj_przeksztalcenie() -> transforms.Compose:
+    """Zwraca przeksztalcenie obrazu uzywane przy liczeniu embeddingow.
 
-    # DLA UCZNIOW - "augmentacja danych": sztucznie tworzymy nowe warianty
-    # tego samego zdjecia (odbicie lustrzane, lekki obrot, zmiana jasnosci
-    # i kontrastu). Dzieki temu ta sama twarz "wyglada" dla sieci troche
-    # inaczej za kazdym razem, co uczy ja ignorowac drobne, nieistotne
-    # roznice zamiast "zapamietywac" pojedyncze zdjecia. Augmentacje
-    # stosujemy TYLKO na zbiorze treningowym - zbior walidacyjny musi
-    # pozostac niezmieniony, bo sluzy do uczciwej oceny modelu.
-    przeksztalcenia_treningowe = transforms.Compose(
-        [
-            # transforms.Compose laczy liste pojedynczych przeksztalcen w
-            # jeden "potok" - kazde zdjecie przejdzie przez nie po kolei,
-            # od gory do dolu.
-            transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
-            # RandomHorizontalFlip - z prawdopodobienstwem 50% odbija zdjecie
-            # w poziomie (lustrzane odbicie) - twarz wyglada naturalnie
-            # zarowno w oryginale, jak i po takim odbiciu.
-            transforms.RandomHorizontalFlip(p=0.5),
-            # RandomRotation - losowo obraca zdjecie o maksymalnie 10 stopni
-            # w dowolna strone, symulujac lekkie przechylenie glowy.
-            transforms.RandomRotation(10),
-            # ColorJitter - losowo zmienia jasnosc/kontrast/nasycenie
-            # kolorow, symulujac rozne warunki oswietlenia w sali lekcyjnej.
-            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
-            # ToTensor zamienia obraz (dotychczas w formacie PIL/numpy) na
-            # tensor PyTorch - podstawowy typ danych, na ktorym dziala siec
-            # neuronowa - i skaluje wartosci pikseli z zakresu 0-255 do 0-1.
-            transforms.ToTensor(),
-            # Normalize odejmuje srednia i dzieli przez odchylenie standardowe
-            # dla kazdego kanalu koloru - patrz wyjasnienie w common/model.py
-            # (musi byc identyczne jak podczas oryginalnego treningu na ImageNet).
-            transforms.Normalize(SREDNIA_IMAGENET, ODCHYLENIE_IMAGENET),
-        ]
-    )
-    przeksztalcenia_walidacyjne = transforms.Compose(
-        [
-            # Zbior walidacyjny NIE dostaje augmentacji (RandomHorizontalFlip,
-            # RandomRotation, ColorJitter) - tylko przeskalowanie i normalizacje,
-            # bo chcemy oceniac model na "czystych", niezmienionych zdjeciach.
-            transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
-            transforms.ToTensor(),
-            transforms.Normalize(SREDNIA_IMAGENET, ODCHYLENIE_IMAGENET),
-        ]
-    )
-
-    # ImageFolder automatycznie tworzy klasy na podstawie nazw podfolderow -
-    # np. data/processed/train/jan_kowalski/*.jpg -> klasa "jan_kowalski".
-    # Parametr "transform" mowi, jaki potok przeksztalcen zastosowac do
-    # kazdego wczytywanego zdjecia.
-    zbior_treningowy = datasets.ImageFolder(
-        FOLDER_PRZETWORZONYCH_DANYCH / "train", transform=przeksztalcenia_treningowe
-    )
-    zbior_walidacyjny = datasets.ImageFolder(
-        FOLDER_PRZETWORZONYCH_DANYCH / "val", transform=przeksztalcenia_walidacyjne
-    )
-
-    # DataLoader dzieli caly zbior na paczki (batch) po "rozmiar_batcha"
-    # zdjec i podaje je sieci po kolei. shuffle=True losowo miesza
-    # kolejnosc zdjec w kazdej epoce treningowej (zeby siec nie uczyla sie
-    # przypadkiem "kolejnosci" danych) - dla walidacji shuffle nie jest
-    # potrzebne, bo tylko oceniamy model, nie trenujemy go. num_workers=2
-    # oznacza, ze wczytywaniem/przygotowywaniem kolejnych paczek zajmuja sie
-    # 2 dodatkowe procesy rownolegle, w tle, podczas gdy GPU liczy poprzednia paczke.
-    ladowarka_treningowa = DataLoader(
-        zbior_treningowy, batch_size=rozmiar_batcha, shuffle=True, num_workers=2
-    )
-    ladowarka_walidacyjna = DataLoader(
-        zbior_walidacyjny, batch_size=rozmiar_batcha, shuffle=False, num_workers=2
-    )
-
-    return ladowarka_treningowa, ladowarka_walidacyjna, zbior_treningowy.classes
-
-
-def wykonaj_epoke(
-    model: nn.Module,
-    ladowarka: DataLoader,
-    urzadzenie: torch.device,
-    funkcja_straty: nn.Module,
-    optymalizator: optim.Optimizer | None,
-) -> tuple[float, float]:
-    """Wykonuje jeden pelny przebieg (epoke) po podanym zbiorze danych.
-
-    Jesli podano optymalizator, jest to epoka TRENINGOWA (model uczy sie -
-    aktualizuje swoje wagi). Jesli optymalizator to None, jest to epoka
-    WALIDACYJNA (model tylko ocenia dane, bez uczenia sie na nich).
-
-    Zwraca srednia wartosc funkcji straty (loss) oraz dokladnosc (accuracy)
-    na calym zbiorze.
+    DLA UCZNIOW: w odroznieniu od poprzedniej wersji tego skryptu NIE
+    uzywamy tu zadnej augmentacji (losowego kadrowania, rozmycia itp.) -
+    liczymy wzorzec (centroid) na podstawie mozliwie "czystych",
+    powtarzalnych zdjec. Augmentacja miala sens przy TRENOWANIU wag sieci
+    (uczyla ja ignorowac drobne roznice) - tutaj niczego juz nie trenujemy,
+    wiec chcemy po prostu jak najdokladniejszy, stabilny opis kazdego
+    zdjecia.
     """
-    czy_trening = optymalizator is not None
-    # model.train(True/False) przelacza siec miedzy trybem treningowym a
-    # ewaluacyjnym - wplywa to na warstwy takie jak Dropout czy BatchNorm,
-    # ktore powinny zachowywac sie inaczej podczas uczenia niz podczas
-    # zwyklego uzywania/oceny modelu.
-    model.train(czy_trening)
+    return transforms.Compose(
+        [
+            transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
+            transforms.ToTensor(),
+            transforms.Normalize(SREDNIA_IMAGENET, ODCHYLENIE_IMAGENET),
+        ]
+    )
 
-    suma_straty, liczba_trafien, liczba_probek = 0.0, 0, 0
 
-    # torch.set_grad_enabled(False) podczas walidacji wylacza liczenie
-    # gradientow - nie sa one potrzebne, gdy tylko oceniamy model, a ich
-    # pominiecie oszczedza pamiec i przyspiesza obliczenia.
-    with torch.set_grad_enabled(czy_trening):
-        # Petla po kolejnych paczkach (batch) danych z ladowarki - kazda
-        # paczka to para: "obrazy" (tensor kilkudziesieciu zdjec naraz) i
-        # "etykiety" (numery klas/osob, do ktorych te zdjecia naleza).
-        for obrazy, etykiety in ladowarka:
-            # .to(urzadzenie) przenosi dane na wybrane urzadzenie
-            # obliczeniowe (GPU albo CPU) - obliczenia moga sie odbywac
-            # tylko wtedy, gdy model i dane znajduja sie na tym samym
-            # urzadzeniu.
-            obrazy, etykiety = obrazy.to(urzadzenie), etykiety.to(urzadzenie)
+def policz_embeddingi(
+    ekstraktor: torch.nn.Module,
+    folder: Path,
+    urzadzenie: torch.device,
+    rozmiar_batcha: int,
+) -> tuple[torch.Tensor, list[int], list[str]]:
+    """Liczy znormalizowane embeddingi wszystkich zdjec w podanym folderze
+    (train lub val), pogrupowanych na podfoldery-klasy (osoby).
 
-            # "Przejscie w przod" (forward pass) - podajemy obrazy do sieci
-            # i dostajemy jej surowe przewidywania (logity) dla kazdej klasy.
-            wyniki = model(obrazy)
-            strata = funkcja_straty(wyniki, etykiety)
+    Zwraca:
+      - macierz embeddingow o ksztalcie [liczba_zdjec, wymiar_cech],
+      - liste numerow klas (indeksow) odpowiadajacych kolejnym zdjeciom,
+      - liste nazw klas (osob) w kolejnosci ustalonej przez ImageFolder.
+    """
+    zbior = datasets.ImageFolder(folder, transform=przygotuj_przeksztalcenie())
+    ladowarka = DataLoader(zbior, batch_size=rozmiar_batcha, shuffle=False, num_workers=2)
 
-            if czy_trening:
-                # Klasyczny "krok" uczenia sieci neuronowej metoda propagacji
-                # wstecznej (backpropagation):
-                optymalizator.zero_grad()  # 1. wyzeruj gradienty z poprzedniego kroku
-                strata.backward()  # 2. wylicz gradienty (jak zmienic wagi, by zmniejszyc strate)
-                optymalizator.step()  # 3. zaktualizuj wagi modelu
+    wszystkie_embeddingi = []
+    wszystkie_etykiety: list[int] = []
+    for obrazy, etykiety in ladowarka:
+        obrazy = obrazy.to(urzadzenie)
+        embeddingi = oblicz_znormalizowane_cechy(ekstraktor, obrazy)
+        wszystkie_embeddingi.append(embeddingi.cpu())
+        wszystkie_etykiety.extend(etykiety.tolist())
 
-            suma_straty += strata.item() * obrazy.size(0)
-            liczba_trafien += (wyniki.argmax(1) == etykiety).sum().item()
-            liczba_probek += obrazy.size(0)
+    return torch.cat(wszystkie_embeddingi, dim=0), wszystkie_etykiety, zbior.classes
 
-    return suma_straty / liczba_probek, liczba_trafien / liczba_probek
+
+def zbuduj_wzorce(
+    embeddingi_trening: torch.Tensor, etykiety_trening: list[int], klasy: list[str]
+) -> dict[str, torch.Tensor]:
+    """Usrednia embeddingi kazdej znanej osoby ze zbioru treningowego,
+    tworzac jej "wzorzec" (centroid) - jeden, reprezentatywny wektor.
+
+    Pomija klase NAZWA_KLASY_NIEZNAJOMY - to nie jest prawdziwa osoba do
+    rozpoznania, tylko pomocniczy zbior "obcych" twarzy uzywany wylacznie
+    do kalibracji progu (patrz skalibruj_progi ponizej).
+    """
+    wzorce: dict[str, torch.Tensor] = {}
+    for indeks_klasy, nazwa_osoby in enumerate(klasy):
+        if nazwa_osoby == NAZWA_KLASY_NIEZNAJOMY:
+            continue
+        maska = torch.tensor([e == indeks_klasy for e in etykiety_trening])
+        embeddingi_osoby = embeddingi_trening[maska]
+        if embeddingi_osoby.shape[0] == 0:
+            print(f"[uwaga] Brak zdjec treningowych dla '{nazwa_osoby}' - pomijam.")
+            continue
+
+        # Usredniamy wszystkie embeddingi tej osoby, a nastepnie NORMALIZUJEMY
+        # wynik z powrotem do dlugosci 1 (srednia kilku wektorow jednostkowych
+        # sama w sobie zwykle nie ma juz dlugosci 1) - dzieki temu centroid
+        # nadal mozna porownywac zwyklym iloczynem skalarnym (patrz
+        # oblicz_znormalizowane_cechy w common/model.py).
+        centroid = embeddingi_osoby.mean(dim=0)
+        centroid = centroid / centroid.norm(p=2)
+        wzorce[nazwa_osoby] = centroid
+        print(f"[info] Wzorzec '{nazwa_osoby}' zbudowany z {embeddingi_osoby.shape[0]} zdjec.")
+
+    return wzorce
+
+
+def skalibruj_progi(
+    wzorce: dict[str, torch.Tensor],
+    embeddingi_walidacja: torch.Tensor,
+    etykiety_walidacja: list[int],
+    klasy: list[str],
+    margines_bezpieczenstwa: float,
+) -> dict[str, dict]:
+    """Dla kazdej znanej osoby wylicza prog podobienstwa kosinusowego
+    oddzielajacy jej WLASNE zdjecia walidacyjne od zdjec WSZYSTKICH innych
+    osob/nieznajomych.
+
+    DLA UCZNIOW - jak dokladnie dobierany jest prog?
+      1. Liczymy podobienstwo (iloczyn skalarny znormalizowanych wektorow =
+         cosine similarity) miedzy centroidem tej osoby a KAZDYM zdjeciem
+         walidacyjnym NALEZACYM do niej -> zbior "podobienstw wlasnych".
+      2. Liczymy to samo dla KAZDEGO zdjecia walidacyjnego NIENALEZACEGO do
+         niej (inne osoby + "nieznajomy") -> zbior "podobienstw obcych".
+      3. Prog ustawiamy DOKLADNIE POSRODKU miedzy najgorszym (najnizszym)
+         wynikiem wlasnym a najlepszym (najwyzszym) wynikiem obcym - to
+         najbezpieczniejszy punkt, jaki mozna wybrac na podstawie danych,
+         jakie mamy. Jesli te dwa zbiory na siebie "nachodza" (obcy wynik
+         wypada wyzej niz wlasny), nie da sie znalezc progu idealnie
+         rozdzielajacego obie grupy - wypisujemy wtedy ostrzezenie (patrz
+         nizej), bo to znak, ze warto zebrac wiecej/lepszych zdjec.
+      4. Dodatkowo podnosimy prog o "margines_bezpieczenstwa" (domyslnie
+         0.03) - w praktyce lepiej czasem nieslusznie zapytac znana osobe
+         o imie jeszcze raz, niz pomylkowo rozpoznac obca osobe jako znana.
+    """
+    wyniki: dict[str, dict] = {}
+
+    for nazwa_osoby, centroid in wzorce.items():
+        indeks_klasy = klasy.index(nazwa_osoby)
+        maska_wlasna = torch.tensor([e == indeks_klasy for e in etykiety_walidacja])
+        maska_obca = ~maska_wlasna
+
+        # Mnozenie macierzowe embeddingow (kazdy o dlugosci 1) przez centroid
+        # (tez o dlugosci 1) daje wprost podobienstwo kosinusowe dla kazdego
+        # zdjecia na raz - bez potrzeby recznej petli.
+        podobienstwa = embeddingi_walidacja @ centroid
+
+        podobienstwa_wlasne = podobienstwa[maska_wlasna]
+        podobienstwa_obce = podobienstwa[maska_obca]
+
+        if podobienstwa_wlasne.numel() == 0:
+            print(f"[uwaga] Brak zdjec walidacyjnych dla '{nazwa_osoby}' - uzywam domyslnego progu 0.5.")
+            wyniki[nazwa_osoby] = {"prog": 0.5, "srednie_wlasne": None, "srednie_obce": None}
+            continue
+
+        min_wlasne = podobienstwa_wlasne.min().item()
+        srednia_wlasne = podobienstwa_wlasne.mean().item()
+
+        if podobienstwa_obce.numel() > 0:
+            maks_obce = podobienstwa_obce.max().item()
+            srednia_obce = podobienstwa_obce.mean().item()
+        else:
+            # Brak jakichkolwiek "obcych" zdjec walidacyjnych (np. tylko
+            # jedna osoba w bazie i brak klasy "nieznajomy") - nie mamy jak
+            # empirycznie ocenic progu, wiec przyjmujemy ostrozna wartosc
+            # domyslna.
+            maks_obce = min_wlasne - 0.2
+            srednia_obce = maks_obce
+            print(
+                f"[uwaga] Brak 'obcych' zdjec walidacyjnych do porownania z '{nazwa_osoby}' "
+                "- prog jest tylko przyblizony. Rozwaz uruchomienie "
+                "pobierz_zdjecia_nieznajomych.py, jesli tego jeszcze nie zrobiono."
+            )
+
+        if maks_obce >= min_wlasne:
+            print(
+                f"[uwaga] Slaba separowalnosc dla '{nazwa_osoby}' - podobienstwo obcego zdjecia "
+                f"({maks_obce:.2f}) jest wyzsze niz najgorszy wynik wlasny ({min_wlasne:.2f}). "
+                "System bedzie dzialac, ale rozwaz dodanie wiecej/lepszych zdjec treningowych "
+                "(rozne oswietlenie, kat glowy, itp.)."
+            )
+            prog_bazowy = (srednia_wlasne + srednia_obce) / 2
+        else:
+            prog_bazowy = (min_wlasne + maks_obce) / 2
+
+        prog = min(0.95, max(0.2, prog_bazowy + margines_bezpieczenstwa))
+
+        wyniki[nazwa_osoby] = {
+            "prog": prog,
+            "srednie_wlasne": srednia_wlasne,
+            "srednie_obce": srednia_obce,
+        }
+        print(
+            f"[info] '{nazwa_osoby}': podobienstwo wlasne ~{srednia_wlasne:.2f} "
+            f"(min {min_wlasne:.2f}), podobienstwo obce ~{srednia_obce:.2f} (maks {maks_obce:.2f}) "
+            f"-> wybrany prog = {prog:.2f}"
+        )
+
+    return wyniki
 
 
 def main() -> None:
@@ -228,133 +302,84 @@ def main() -> None:
         )
 
     urzadzenie = pobierz_urzadzenie()
-    ladowarka_treningowa, ladowarka_walidacyjna, klasy = przygotuj_zbiory_danych(argumenty.batch_size)
+    # zbuduj_ekstraktor_cech() zwraca siec ZAWSZE z wagami ImageNet - nigdy
+    # jej nie trenujemy, wiec to jedyne wagi, jakich kiedykolwiek uzyje.
+    ekstraktor = zbuduj_ekstraktor_cech().to(urzadzenie)
+
+    print("[info] Liczenie embeddingow zbioru treningowego...")
+    embeddingi_trening, etykiety_trening, klasy = policz_embeddingi(
+        ekstraktor, FOLDER_PRZETWORZONYCH_DANYCH / "train", urzadzenie, argumenty.batch_size
+    )
     print(f"[info] Klasy ({len(klasy)}): {klasy}")
 
-    model = zbuduj_model(liczba_klas=len(klasy), pretrenowany=True, zamroz_ekstraktor_cech=True)
-    model.to(urzadzenie)
-
-    # CrossEntropyLoss to standardowa funkcja straty dla klasyfikacji
-    # wieloklasowej - kara model tym mocniej, im bardziej byl "pewny"
-    # blednej odpowiedzi.
-    funkcja_straty = nn.CrossEntropyLoss()
-
-    historia = {"strata_trening": [], "trafnosc_trening": [], "strata_walidacja": [], "trafnosc_walidacja": []}
-    najlepsza_trafnosc_walidacyjna = 0.0
-
-    # --- Etap 1: trening samego klasyfikatora (ekstraktor cech zamrozony) ---
-    # optim.Adam to popularny algorytm optymalizacji (aktualizacji wag sieci)
-    # - automatycznie dostosowuje "krok" uczenia dla kazdego parametru osobno,
-    # co zwykle daje szybsza i stabilniejsza zbieznosc niz prostszy SGD.
-    # Wyrazenie generatorowe "(parametr for parametr in model.parameters()
-    # if parametr.requires_grad)" przekazuje optymalizatorowi TYLKO te
-    # parametry, ktore nie sa zamrozone (patrz common/model.py) - dzieki
-    # temu optymalizator w ogole nie probuje aktualizowac zamrozonego
-    # ekstraktora cech.
-    optymalizator = optim.Adam(
-        (parametr for parametr in model.parameters() if parametr.requires_grad), lr=argumenty.lr
+    print("[info] Liczenie embeddingow zbioru walidacyjnego...")
+    embeddingi_walidacja, etykiety_walidacja, klasy_walidacja = policz_embeddingi(
+        ekstraktor, FOLDER_PRZETWORZONYCH_DANYCH / "val", urzadzenie, argumenty.batch_size
     )
-    print("\n[etap 1/2] Trening klasyfikatora (ekstraktor cech zamrozony)")
-    for numer_epoki in range(1, argumenty.epoki + 1):
-        czas_startu = time.time()
-        strata_trening, trafnosc_trening = wykonaj_epoke(
-            model, ladowarka_treningowa, urzadzenie, funkcja_straty, optymalizator
-        )
-        strata_walidacja, trafnosc_walidacja = wykonaj_epoke(
-            model, ladowarka_walidacyjna, urzadzenie, funkcja_straty, None
-        )
-        czas_trwania = time.time() - czas_startu
-
-        historia["strata_trening"].append(strata_trening)
-        historia["trafnosc_trening"].append(trafnosc_trening)
-        historia["strata_walidacja"].append(strata_walidacja)
-        historia["trafnosc_walidacja"].append(trafnosc_walidacja)
-
-        print(
-            f"epoka {numer_epoki:02d}/{argumenty.epoki} | "
-            f"strata_trening={strata_trening:.3f} trafnosc_trening={trafnosc_trening:.3f} | "
-            f"strata_walidacja={strata_walidacja:.3f} trafnosc_walidacja={trafnosc_walidacja:.3f} | "
-            f"{czas_trwania:.1f}s"
+    if klasy_walidacja != klasy:
+        raise SystemExit(
+            "Zbior treningowy i walidacyjny maja rozne listy osob - uruchom ponownie "
+            "02_podzial_danych.py, aby je zsynchronizowac."
         )
 
-        # Zapisujemy model TYLKO wtedy, gdy poprawil sie wynik na zbiorze
-        # walidacyjnym - to gwarantuje, ze na koncu zostanie nam najlepsza
-        # (a nie ostatnia) wersja modelu, nawet jesli pozniej zaczalby sie
-        # przeuczac.
-        if trafnosc_walidacja > najlepsza_trafnosc_walidacyjna:
-            najlepsza_trafnosc_walidacyjna = trafnosc_walidacja
-            torch.save(model.state_dict(), FOLDER_MODELI / "model_twarzy.pt")
-
-    # --- Etap 2: fine-tuning (douczanie) ostatnich blokow ekstraktora cech ---
-    if argumenty.epoki_finetuning > 0:
-        print("\n[etap 2/2] Fine-tuning (douczanie) ostatnich warstw ekstraktora cech")
-        odmroz_ekstraktor_cech(model, liczba_ostatnich_blokow=3)
-        optymalizator = optim.Adam(
-            (parametr for parametr in model.parameters() if parametr.requires_grad),
-            lr=argumenty.lr_finetuning,
+    wzorce = zbuduj_wzorce(embeddingi_trening, etykiety_trening, klasy)
+    if not wzorce:
+        raise SystemExit(
+            "Nie udalo sie zbudowac zadnego wzorca tozsamosci - sprawdz, czy "
+            "data/processed/train zawiera podfoldery z prawdziwymi osobami."
         )
 
-        for numer_epoki in range(1, argumenty.epoki_finetuning + 1):
-            czas_startu = time.time()
-            strata_trening, trafnosc_trening = wykonaj_epoke(
-                model, ladowarka_treningowa, urzadzenie, funkcja_straty, optymalizator
-            )
-            strata_walidacja, trafnosc_walidacja = wykonaj_epoke(
-                model, ladowarka_walidacyjna, urzadzenie, funkcja_straty, None
-            )
-            czas_trwania = time.time() - czas_startu
+    kalibracja = skalibruj_progi(
+        wzorce, embeddingi_walidacja, etykiety_walidacja, klasy, argumenty.margines_bezpieczenstwa
+    )
 
-            historia["strata_trening"].append(strata_trening)
-            historia["trafnosc_trening"].append(trafnosc_trening)
-            historia["strata_walidacja"].append(strata_walidacja)
-            historia["trafnosc_walidacja"].append(trafnosc_walidacja)
+    # Zapisujemy wzorce (centroidy) razem ze skalibrowanymi progami do
+    # jednego pliku JSON - skrypt 04 wczyta go w calosci przy starcie.
+    dane_do_zapisu = {
+        "wymiar_cech": next(iter(wzorce.values())).shape[0],
+        "osoby": {
+            nazwa_osoby: {
+                # .tolist() zamienia tensor PyTorch na zwykla liste liczb
+                # Pythona - JSON nie potrafi bezposrednio zapisac tensorow.
+                "centroid": centroid.tolist(),
+                "prog_podobienstwa": kalibracja[nazwa_osoby]["prog"],
+            }
+            for nazwa_osoby, centroid in wzorce.items()
+        },
+    }
+    with open(FOLDER_MODELI / "wzorce_osob.json", "w", encoding="utf-8") as plik:
+        json.dump(dane_do_zapisu, plik, ensure_ascii=False, indent=2)
 
-            print(
-                f"epoka ft {numer_epoki:02d}/{argumenty.epoki_finetuning} | "
-                f"strata_trening={strata_trening:.3f} trafnosc_trening={trafnosc_trening:.3f} | "
-                f"strata_walidacja={strata_walidacja:.3f} trafnosc_walidacja={trafnosc_walidacja:.3f} | "
-                f"{czas_trwania:.1f}s"
-            )
+    print(f"\n[gotowe] Wzorce tozsamosci zapisane w: {FOLDER_MODELI / 'wzorce_osob.json'}")
+    print("[gotowe] Mozesz teraz uruchomic: python 04_rozpoznawanie_na_zywo.py")
 
-            if trafnosc_walidacja > najlepsza_trafnosc_walidacyjna:
-                najlepsza_trafnosc_walidacyjna = trafnosc_walidacja
-                torch.save(model.state_dict(), FOLDER_MODELI / "model_twarzy.pt")
-
-    # Zapisujemy liste klas (nazw osob) w tej samej kolejnosci, w jakiej
-    # widzial je model - bez tego nie moglibysmy pozniej odczytac, ktory
-    # numer wyjscia sieci odpowiada ktorej osobie.
-    with open(FOLDER_MODELI / "klasy.json", "w", encoding="utf-8") as plik:
-        json.dump(klasy, plik, ensure_ascii=False, indent=2)
-
-    print(f"\n[gotowe] Najlepsza dokladnosc walidacyjna: {najlepsza_trafnosc_walidacyjna:.3f}")
-    print(f"[gotowe] Model zapisany w: {FOLDER_MODELI / 'model_twarzy.pt'}")
-
-    # Rysujemy wykres krzywych uczenia - bardzo przydatny do dydaktyki:
-    # uczniowie moga na wlasne oczy zobaczyc, jak wyglada przeuczenie
-    # (train_acc rosnie, val_acc przestaje rosnac albo spada).
+    # Rysujemy histogram podobienstw "wlasnych" i "obcych" dla kazdej osoby -
+    # bardzo przydatne dydaktycznie: uczniowie na wlasne oczy widza, jak
+    # daleko od siebie znajduja sie te dwie grupy i dlaczego prog zostal
+    # ustawiony akurat w tym miejscu.
     try:
         import matplotlib.pyplot as plt
 
-        zakres_epok = range(1, len(historia["trafnosc_trening"]) + 1)
-        rysunek, osie = plt.subplots(1, 2, figsize=(10, 4))
+        liczba_osob = len(wzorce)
+        rysunek, osie = plt.subplots(1, liczba_osob, figsize=(5 * liczba_osob, 4), squeeze=False)
+        for numer_wykresu, (nazwa_osoby, centroid) in enumerate(wzorce.items()):
+            indeks_klasy = klasy.index(nazwa_osoby)
+            maska_wlasna = torch.tensor([e == indeks_klasy for e in etykiety_walidacja])
+            podobienstwa = embeddingi_walidacja @ centroid
 
-        osie[0].plot(zakres_epok, historia["strata_trening"], label="trening")
-        osie[0].plot(zakres_epok, historia["strata_walidacja"], label="walidacja")
-        osie[0].set_title("Funkcja straty (loss)")
-        osie[0].set_xlabel("epoka")
-        osie[0].legend()
-
-        osie[1].plot(zakres_epok, historia["trafnosc_trening"], label="trening")
-        osie[1].plot(zakres_epok, historia["trafnosc_walidacja"], label="walidacja")
-        osie[1].set_title("Dokladnosc (accuracy)")
-        osie[1].set_xlabel("epoka")
-        osie[1].legend()
+            os_wykresu = osie[0][numer_wykresu]
+            os_wykresu.hist(podobienstwa[maska_wlasna].numpy(), bins=15, alpha=0.6, label="wlasne zdjecia")
+            os_wykresu.hist(podobienstwa[~maska_wlasna].numpy(), bins=15, alpha=0.6, label="obce zdjecia")
+            os_wykresu.axvline(kalibracja[nazwa_osoby]["prog"], color="red", linestyle="--", label="prog")
+            os_wykresu.set_title(f"Kalibracja progu: {nazwa_osoby}")
+            os_wykresu.set_xlabel("podobienstwo kosinusowe")
+            os_wykresu.legend()
 
         rysunek.tight_layout()
-        rysunek.savefig(FOLDER_MODELI / "krzywe_uczenia.png")
-        print(f"[gotowe] Wykres krzywych uczenia: {FOLDER_MODELI / 'krzywe_uczenia.png'}")
+        rysunek.savefig(FOLDER_MODELI / "kalibracja_progu.png")
+        print(f"[gotowe] Wykres kalibracji progu: {FOLDER_MODELI / 'kalibracja_progu.png'}")
     except ImportError:
-        print("[uwaga] matplotlib niedostepny - pomijam wykres krzywych uczenia.")
+        print("[uwaga] matplotlib niedostepny - pomijam wykres kalibracji progu.")
 
 
 if __name__ == "__main__":

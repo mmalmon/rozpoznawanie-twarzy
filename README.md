@@ -36,24 +36,40 @@ Do klasyfikacji używamy metody **transfer learning**: zamiast trenować sieć
 od zera (co wymagałoby milionów zdjęć), bierzemy sieć **MobileNetV3-Small**
 wytrenowaną wcześniej na dużym zbiorze ImageNet (1000 klas ogólnych
 obiektów: koty, samochody, itd.). Taka sieć "umie już" wyciągać uniwersalne
-cechy wizualne (krawędzie, kształty, tekstury). My tylko:
+cechy wizualne (krawędzie, kształty, tekstury).
 
-- zamrażamy (nie trenujemy) większość jej warstw,
-- podmieniamy jej ostatnią warstwę na nową, z liczbą wyjść równą liczbie
-  osób w naszej bazie,
-- trenujemy tę nową warstwę na naszych zdjęciach (etap 1),
-- na koniec lekko doszkalamy też kilka ostatnich warstw oryginalnej sieci
-  (etap 2, tzw. *fine-tuning*), żeby dopasować ją dokładniej do specyfiki
-  twarzy.
+Zamiast (jak w pierwszej wersji tego projektu) douczać nową warstwę
+klasyfikującą "kto z tych N znanych osób jest na zdjęciu", używamy
+podejścia **rozpoznawania przez podobieństwo** (verification), znacznie
+odporniejszego na małe, niezbalansowane zbiory danych:
 
-Dzięki temu wystarczy 150–300 zdjęć na osobę, a trening zajmuje minuty
-zamiast dni.
+- Sieć (bez żadnego dotrenowywania — wagi zostają dokładnie takie, jak po
+  treningu na ImageNet) zamienia każde zdjęcie twarzy na **embedding** —
+  wektor kilkuset liczb opisujący jej wygląd.
+- Dla każdej znanej osoby uśredniamy embeddingi wszystkich jej zdjęć
+  treningowych, tworząc jej **wzorzec** (centroid).
+- Podczas rozpoznawania na żywo liczymy embedding nowej twarzy i sprawdzamy
+  jego **podobieństwo kosinusowe** do wzorca każdej znanej osoby.
 
-Bardzo ważny jest też **próg pewności** przy rozpoznawaniu: sieć zawsze
-zwróci "najbardziej prawdopodobną" znaną jej osobę, nawet jeśli w kadrze
-jest ktoś zupełnie inny. Dlatego jeśli pewność klasyfikacji jest niska
-(poniżej ustawionego progu, domyślnie 60%), program pokazuje etykietę
-"Nieznana osoba" zamiast zgadywać.
+Dzięki temu wystarczy 150–300 zdjęć na osobę, a "trening" (w praktyce:
+liczenie embeddingów i kalibracja progu) zajmuje sekundy zamiast minut,
+nawet na samym CPU.
+
+> **Dlaczego nie zwykła klasyfikacja?** Pierwsza wersja tego projektu
+> uczyła sieć rozróżniać "znaną osobę" od zdjęć klasy "nieznajomy" pobranych
+> z internetu. W praktyce sieć nauczyła się rozróżniać *styl zdjęcia*
+> (ostre zdjęcie z kamery vs. skompresowane zdjęcie stockowe), a nie same
+> rysy twarzy — to tzw. **uczenie się skrótów** (*shortcut learning*), bardzo
+> częsty i pouczający błąd w uczeniu maszynowym. Podejście oparte o
+> embeddingi i próg podobieństwa nie ma tej wady, bo nigdy nie trenujemy
+> żadnej wagi na parze (moja twarz vs. zdjęcia z internetu) — o dopasowaniu
+> decyduje wyłącznie ogólna wiedza sieci o obrazach.
+
+Bardzo ważny jest też **próg podobieństwa** przy rozpoznawaniu: dla każdej
+osoby jest on automatycznie **skalibrowany** w kroku 3 na podstawie danych
+walidacyjnych (patrz `models/kalibracja_progu.png`), a nie ustawiony "na
+oko". Jeśli podobieństwo nowej twarzy do żadnego wzorca nie przekracza jego
+progu, program pokazuje etykietę "Nieznana osoba" zamiast zgadywać.
 
 ## Wymagania sprzętowe i sprzęt użyty w projekcie
 
@@ -83,21 +99,21 @@ rozpoznawanie twarzy/
 ├── 00_test_detekcji.py          # krok 0: szybki test detekcji (bez rozpoznawania)
 ├── 01_zbieranie_danych.py       # krok 1: zbieranie zdjęć z kamery
 ├── 02_podzial_danych.py         # krok 2: podział na train/val
-├── 03_trenowanie_modelu.py      # krok 3: trening sieci (transfer learning)
+├── 03_trenowanie_modelu.py      # krok 3: wzorce tozsamosci (embeddingi) + kalibracja progu
 ├── 04_rozpoznawanie_na_zywo.py  # krok 4: rozpoznawanie na żywo z kamery
 ├── listuj_kamery.py             # pomocniczy: wypisuje dostępne kamery i ich rozdzielczości
+├── pobierz_zdjecia_nieznajomych.py  # pomocniczy: pobiera zdjecia "obcych" osob do kalibracji progu
 ├── common/
 │   ├── camera.py                # obsługa kamery (wybór, otwieranie, wymuszenie MJPG/4K)
 │   ├── face_detector.py         # detekcja twarzy (kaskada Haara)
 │   ├── imgio.py                 # zapis/odczyt zdjęć odporny na polskie znaki w ścieżce
-│   └── model.py                 # definicja modelu (transfer learning)
+│   └── model.py                 # definicja modelu (ekstraktor cech / embeddingi)
 ├── data/
 │   ├── raw/<osoba>/             # surowe zdjęcia z kamery (per osoba)
 │   └── processed/{train,val}/   # dane po podziale, gotowe do treningu
 ├── models/
-│   ├── model_twarzy.pt          # wagi wytrenowanego modelu
-│   ├── klasy.json               # lista rozpoznawanych osób
-│   └── krzywe_uczenia.png       # wykres accuracy/loss
+│   ├── wzorce_osob.json         # wzorce (centroidy) tozsamosci + skalibrowane progi
+│   └── kalibracja_progu.png     # wykres pomagajacy zrozumiec dobor progu
 ├── requirements.txt
 └── README.md
 ```
@@ -216,7 +232,11 @@ python 01_zbieranie_danych.py --osoba jan_kowalski --cel 250
 
 > Wskazówka dydaktyczna: warto też zebrać folder osoby "obcy"/"nieznany" ze
 > zdjęciami osób spoza grupy (np. z internetu, za zgodą, albo zdjęcia
-> nauczyciela) — pomaga to ocenić, jak model radzi sobie z progiem pewności.
+> nauczyciela) — pomocniczy skrypt `pobierz_zdjecia_nieznajomych.py` robi to
+> automatycznie. Te zdjęcia NIE są używane do trenowania żadnej wagi — służą
+> wyłącznie do automatycznej kalibracji progu podobieństwa w kroku 3 (patrz
+> niżej), więc ich stylistyczna odmienność od zdjęć z kamery nie stanowi
+> już problemu (w odróżnieniu od podejścia klasyfikacyjnego).
 
 ### Krok 2 — podział na zbiór treningowy i walidacyjny
 
@@ -228,35 +248,41 @@ Domyślnie 80% zdjęć każdej osoby trafia do treningu, a 20% do walidacji
 (używanej do sprawdzania, czy model się nie przeucza). Wynik trafia do
 `data/processed/train/` i `data/processed/val/`.
 
-### Krok 3 — trening modelu
+### Krok 3 — budowanie wzorców tożsamości i kalibracja progu
 
 ```powershell
-python 03_trenowanie_modelu.py --epoki 15 --epoki-finetuning 8
+python 03_trenowanie_modelu.py
 ```
 
 Skrypt:
 
-1. Trenuje nowy klasyfikator na zamrożonym backbone'ie (szybkie epoki).
-2. Odmraża kilka ostatnich warstw sieci i dotrenowuje je (fine-tuning) z
-   mniejszym learning rate.
-3. Zapisuje najlepszy (wg dokładności walidacyjnej) model do
-   `models/model_twarzy.pt`, listę klas do `models/klasy.json` oraz wykres
-   krzywych uczenia do `models/krzywe_uczenia.png`.
+1. Liczy embeddingi (wektory opisujące wygląd twarzy) wszystkich zdjęć
+   treningowych, używając zamrożonej sieci MobileNetV3-Small (wagi
+   ImageNet, bez żadnego dotrenowywania).
+2. Uśrednia embeddingi każdej znanej osoby w jeden **wzorzec** (centroid).
+3. Na zbiorze walidacyjnym (w tym zdjęciach "nieznajomy", jeśli je zebrano)
+   automatycznie **kalibruje próg podobieństwa** oddzielający "to ta osoba"
+   od "to ktoś inny" — patrz wypisane w konsoli wartości i wykres
+   `models/kalibracja_progu.png`.
+4. Zapisuje wzorce i progi do `models/wzorce_osob.json`.
 
-Na RTX PRO 500 (Blackwell) trening dla kilku osób (kilkaset zdjęć łącznie)
-powinien zająć od ok. 1 do kilku minut. Obserwujcie na wykresie, czy
-`val_acc` rośnie razem z `train_acc` (dobrze) czy zaczyna spadać, gdy
-`train_acc` dalej rośnie (przeuczenie — warto wtedy zebrać więcej danych
-albo skrócić trening).
+Ten krok trwa sekundy do (przy bardzo dużych zbiorach) kilkudziesięciu
+sekund — w odróżnieniu od poprzedniego podejścia (klasyfikacja) nie ma tu
+żadnej pętli uczenia, więc nie potrzeba GPU ani wielu epok. Zwróćcie uwagę
+na komunikat `[uwaga] Slaba separowalnosc...`, jeśli się pojawi — oznacza
+on, że zdjęcia jakiejś osoby są zbyt podobne do zdjęć "obcych" (np. za mało
+zróżnicowane oświetlenie/kąty) i warto zebrać więcej danych.
 
 ### Krok 4 — rozpoznawanie na żywo
 
 ```powershell
-python 04_rozpoznawanie_na_zywo.py --prog-pewnosci 0.6
+python 04_rozpoznawanie_na_zywo.py --korekta-progu 0.05
 ```
 
 Otworzy się podgląd z kamery z ramkami i etykietami rozpoznanych osób wraz
-z procentową pewnością. Naciśnij `q`, aby zakończyć.
+z procentowym podobieństwem. `--korekta-progu` pozwala szybko zaostrzyć
+(wartość dodatnia) lub złagodzić (wartość ujemna) rozpoznawanie bez
+ponownego uruchamiania kroku 3. Naciśnij `q`, aby zakończyć.
 
 ## Jak przygotować dobre materiały treningowe
 
@@ -313,22 +339,35 @@ rozdzielczość podglądu, np. `--szerokosc 1280 --wysokosc 720`.
 
 **Model myli osoby / dużo "Nieznana osoba" dla znanych osób.**
 Zbierz więcej i bardziej zróżnicowanych danych treningowych (patrz sekcja
-wyżej), wydłuż trening (`--epoki`, `--epoki-finetuning`) albo obniż
-`--prog-pewnosci` w kroku 4 (kosztem większego ryzyka pomyłek).
+wyżej — różne kąty głowy, oświetlenie), uruchom ponownie krok 3 (kalibracja
+progu jest automatyczna) albo obniż próg ręcznie przy starcie kroku 4:
+`python 04_rozpoznawanie_na_zywo.py --korekta-progu -0.05`.
 
-**Model bardzo pewnie (>90%) rozpoznaje osobę, której nie ma w kadrze.**
-To spodziewane zachowanie sieci klasyfikującej wśród znanych jej klas —
-dlatego właśnie stosujemy próg pewności. Rozważcie też dodanie klasy
-"obcy"/"nieznany" z różnorodnymi zdjęciami innych osób podczas zbierania
-danych, żeby model miał szansę nauczyć się jej rozpoznawać.
+**Model rozpoznaje jako znaną osobę kogoś zupełnie innego (albo nawet
+fragment czoła/dłoni).** To był częsty problem poprzedniej wersji projektu
+(klasyfikacja) — sieć uczyła się rozróżniać *styl* zdjęć zamiast rysów
+twarzy (patrz sekcja "Jak to działa"). Aktualne podejście (embeddingi +
+skalibrowany próg podobieństwa) jest na to znacznie odporniejsze, ale jeśli
+mimo to się zdarza:
+- Sprawdźcie wykres `models/kalibracja_progu.png` — czy grupy "własne" i
+  "obce" faktycznie się rozdzielają? Jeśli mocno na siebie nachodzą,
+  zbierzcie więcej/różnorodniejszych zdjęć danej osoby.
+- Podnieście próg ręcznie: `--korekta-progu 0.05` (lub więcej).
+- Upewnijcie się, że folder "nieznajomy" (patrz
+  `pobierz_zdjecia_nieznajomych.py`) zawiera wystarczająco dużo zdjęć — im
+  więcej i różnorodniejszych "obcych" przykładów w kroku 3, tym dokładniej
+  skalibrowany próg.
+- Jeśli detektor Haar łapie fragment twarzy (np. samo czoło) jako całą
+  twarz, sprawdźcie `min_rozmiar_wzgledny` w `common/face_detector.py` —
+  zwiększenie go wymusza większe (a więc bardziej kompletne) wykrycia.
 
 ## Pomysły na rozszerzenie projektu (zadania dla uczniów)
 
 - Zamienić kaskadę Haara na nowocześniejszy detektor (np. MediaPipe Face
   Detector) i porównać szybkość/skuteczność.
-- Zamiast klasyfikacji (stała lista osób) zaimplementować podejście oparte
-  o **embeddingi** (np. wytrenować/wykorzystać sieć FaceNet/ArcFace) —
-  pozwala dodawać nowe osoby bez ponownego treningu całej sieci.
+- Zamienić ogólny ekstraktor cech ImageNet na sieć wytrenowaną
+  SPECJALNIE do rozpoznawania twarzy (np. FaceNet/ArcFace) — powinno dać
+  jeszcze lepszą separację embeddingów niż obecne podejście.
   To bardziej zaawansowany, ale bardzo pouczający temat "one-shot/few-shot
   learning".
 - Dodać zapis logów rozpoznań (kto i kiedy został rozpoznany) do pliku

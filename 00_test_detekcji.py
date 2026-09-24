@@ -88,6 +88,15 @@ def main() -> None:
                 print("[blad] Nie udalo sie odczytac klatki z kamery.")
                 break
 
+            # cv2.flip(klatka, 1) odbija obraz w poziomie (parametr 1 =
+            # odbicie wzgledem osi pionowej). Kamera pokazuje domyslnie
+            # obraz "jak dla widza z zewnatrz" - gdy poruszamy glowa w lewo,
+            # na podgladzie widac ruch w prawo. Ludzie sa przyzwyczajeni do
+            # obrazu "jak w lusterku" (tak jak w aplikacjach do wideorozmow
+            # czy w aparacie w telefonie), dlatego odbijamy klatke, zanim
+            # cokolwiek na niej narysujemy lub zapiszemy.
+            klatka = cv2.flip(klatka, 1)
+
             wykryte_twarze = detektor.wykryj(klatka)
 
             # Rysujemy ramke wokol kazdej wykrytej twarzy. Na tym etapie NIE

@@ -1,33 +1,39 @@
 """
 Krok 4: Rozpoznawanie twarzy na zywo z kamery.
 
-Wymaga wczesniejszego wytrenowania modelu (03_trenowanie_modelu.py).
+Wymaga wczesniejszego zbudowania wzorcow tozsamosci (03_trenowanie_modelu.py).
 
 Uzycie:
     python 04_rozpoznawanie_na_zywo.py
-    python 04_rozpoznawanie_na_zywo.py --prog-pewnosci 0.75
+    python 04_rozpoznawanie_na_zywo.py --korekta-progu 0.05
 
-DLA UCZNIOW - dlaczego potrzebny jest "prog pewnosci"?
+DLA UCZNIOW - jak dziala rozpoznawanie w tej wersji projektu?
 
-Siec klasyfikujaca ZAWSZE zwroci "najbardziej prawdopodobna" osobe sposrod
-tych, ktore widziala podczas treningu - nawet jesli w kadrze jest ktos
-zupelnie inny, kogo model nigdy nie widzial! Dlatego oprocz samej
-przewidywanej klasy patrzymy tez na PEWNOSC modelu (prawdopodobienstwo
-z funkcji softmax). Jesli pewnosc jest ponizej ustalonego progu (domyslnie
-60%), pokazujemy etykiete "Nieznana osoba" zamiast zgadywac. To bardzo
-wazny mechanizm bezpieczenstwa w kazdym realnym systemie rozpoznawania
-twarzy.
+W odroznieniu od "klasycznej" klasyfikacji (siec zawsze wybiera
+"najbardziej prawdopodobna" osobe sposrod znanych jej klas, nawet gdy w
+kadrze jest ktos zupelnie inny), tutaj uzywamy podejscia zwanego
+"rozpoznawaniem przez podobienstwo" (verification):
+  1. Kazda wykryta twarz jest zamieniana na embedding - wektor kilkuset
+     liczb opisujacy jej wyglad (uzywajac tej samej, zamrozonej sieci
+     ImageNet, co przy budowaniu wzorcow w skrypcie 03).
+  2. Ten embedding jest porownywany (podobienstwo kosinusowe) ze wzorcem
+     (centroidem) kazdej znanej osoby, wczytanym z models/wzorce_osob.json.
+  3. Jesli NAJWYZSZE znalezione podobienstwo przekracza wczesniej
+     skalibrowany prog danej osoby - twarz zostaje rozpoznana jako ta
+     osoba. Jesli nie przekracza progu ZADNEJ znanej osoby - etykieta
+     "Nieznana osoba".
 
 Kolory ramek:
-  - ZIELONA + imie   -> pewnosc modelu >= progu pewnosci (osoba rozpoznana),
-  - CZERWONA + "Nieznana osoba" -> pewnosc ponizej progu.
+  - ZIELONA + imie   -> podobienstwo do wzorca >= skalibrowanego progu,
+  - CZERWONA + "Nieznana osoba" -> podobienstwo ponizej progu kazdej osoby.
 """
 
 from __future__ import annotations
 
-# argparse - obsluga argumentow uruchomieniowych (--kamera, --prog-pewnosci itd.).
+# argparse - obsluga argumentow uruchomieniowych (--kamera, --korekta-progu itd.).
 import argparse
-# json - do wczytania listy nazw osob zapisanej przez skrypt 03 (klasy.json).
+# json - do wczytania wzorcow tozsamosci (centroidow) i progow zapisanych
+# przez skrypt 03 (wzorce_osob.json).
 import json
 # time - do mierzenia FPS (klatek na sekunde).
 import time
@@ -36,20 +42,23 @@ from pathlib import Path
 
 # cv2 - OpenCV: obsluga kamery, rysowanie ramek/tekstu, konwersja kolorow.
 import cv2
-# torch - glowny silnik PyTorch, tu uzywany do wczytania wag modelu i
-# uruchomienia go na obrazie z kamery (tzw. inferencja).
+# torch - glowny silnik PyTorch, tu uzywany do uruchomienia zamrozonego
+# ekstraktora cech na obrazie z kamery (tzw. inferencja).
 import torch
-# nn.functional (importowany jako "F" - to powszechna konwencja) zawiera
-# funkcje matematyczne uzywane w sieciach neuronowych, tu: softmax do
-# zamiany surowych wynikow sieci na prawdopodobienstwa.
-import torch.nn.functional as F
 # transforms - przeksztalcenia obrazu (zmiana rozmiaru, normalizacja),
-# musza byc identyczne jak podczas treningu w skrypcie 03.
+# musza byc identyczne jak przy liczeniu wzorcow w skrypcie 03.
 from torchvision import transforms
 
 from common.camera import otworz_kamere, wybierz_kamere_interaktywnie
 from common.face_detector import DetektorTwarzy
-from common.model import ODCHYLENIE_IMAGENET, ROZMIAR_OBRAZU, SREDNIA_IMAGENET, pobierz_urzadzenie, zbuduj_model
+from common.model import (
+    ODCHYLENIE_IMAGENET,
+    ROZMIAR_OBRAZU,
+    SREDNIA_IMAGENET,
+    oblicz_znormalizowane_cechy,
+    pobierz_urzadzenie,
+    zbuduj_ekstraktor_cech,
+)
 
 FOLDER_MODELI = Path(__file__).parent / "models"
 
@@ -69,57 +78,83 @@ def parsuj_argumenty() -> argparse.Namespace:
     parser.add_argument("--szerokosc", type=int, default=1920)
     parser.add_argument("--wysokosc", type=int, default=1080)
     parser.add_argument(
-        "--prog-pewnosci",
+        "--korekta-progu",
         type=float,
-        default=0.6,
-        help="Minimalna pewnosc (0-1), ponizej ktorej osoba jest oznaczana jako 'Nieznana'",
+        default=0.0,
+        help=(
+            "Dodatkowa korekta (+/-) do progu podobienstwa skalibrowanego w "
+            "skrypcie 03 - przydatne do szybkiego strojenia bez ponownego "
+            "liczenia wzorcow (dodatnia wartosc = trudniej o rozpoznanie)."
+        ),
     )
     return parser.parse_args()
 
 
-def wczytaj_model(urzadzenie: torch.device) -> tuple[torch.nn.Module, list[str]]:
-    """Wczytuje wytrenowany model oraz liste rozpoznawanych osob z dysku."""
-    sciezka_klas = FOLDER_MODELI / "klasy.json"
-    sciezka_wag = FOLDER_MODELI / "model_twarzy.pt"
-
-    if not sciezka_klas.exists() or not sciezka_wag.exists():
+def wczytaj_wzorce(urzadzenie: torch.device) -> dict[str, dict]:
+    """Wczytuje z dysku wzorce tozsamosci (centroidy) i progi zapisane
+    przez 03_trenowanie_modelu.py, od razu zamieniajac centroidy z listy
+    liczb (format JSON) z powrotem na tensory PyTorch gotowe do liczenia
+    podobienstwa kosinusowego."""
+    sciezka_wzorcow = FOLDER_MODELI / "wzorce_osob.json"
+    if not sciezka_wzorcow.exists():
         raise SystemExit(
-            "Brak wytrenowanego modelu. Najpierw uruchom 03_trenowanie_modelu.py."
+            "Brak wzorcow tozsamosci. Najpierw uruchom 03_trenowanie_modelu.py."
         )
 
-    with open(sciezka_klas, "r", encoding="utf-8") as plik:
-        # json.load() odczytuje plik tekstowy w formacie JSON i zamienia go
-        # z powrotem na obiekt Pythona (tu: liste napisow - nazw osob).
-        klasy = json.load(plik)
+    with open(sciezka_wzorcow, "r", encoding="utf-8") as plik:
+        dane = json.load(plik)
 
-    # pretrenowany=False, bo zaraz wczytamy WLASNE wagi (te wytrenowane w
-    # skrypcie 03) - nie ma sensu najpierw pobierac oryginalnych wag
-    # ImageNet, skoro i tak zostana one zaraz nadpisane.
-    model = zbuduj_model(liczba_klas=len(klasy), pretrenowany=False)
-    # torch.load wczytuje z dysku zapisany wczesniej "stan" modelu (wartosci
-    # wszystkich jego wag) - map_location=urzadzenie gwarantuje, ze zadziala
-    # to poprawnie niezaleznie od tego, czy model byl trenowany na GPU, a
-    # teraz uruchamiamy go na CPU (lub odwrotnie).
-    model.load_state_dict(torch.load(sciezka_wag, map_location=urzadzenie))
-    model.to(urzadzenie)
-    # Tryb .eval() wylacza mechanizmy uzywane tylko podczas treningu
-    # (np. dropout) - podczas rozpoznawania na zywo chcemy zawsze
-    # deterministycznego, "najlepszego" zachowania sieci.
-    model.eval()
+    wzorce: dict[str, dict] = {}
+    for nazwa_osoby, wpis in dane["osoby"].items():
+        wzorce[nazwa_osoby] = {
+            "centroid": torch.tensor(wpis["centroid"], device=urzadzenie),
+            "prog": wpis["prog_podobienstwa"],
+        }
+    return wzorce
 
-    return model, klasy
+
+def rozpoznaj_twarz(
+    embedding: torch.Tensor, wzorce: dict[str, dict], korekta_progu: float
+) -> tuple[str, float]:
+    """Porownuje embedding jednej wykrytej twarzy ze wzorcem KAZDEJ znanej
+    osoby i zwraca (etykieta, podobienstwo) dla najlepszego dopasowania.
+
+    DLA UCZNIOW: przegladamy wszystkie znane osoby, liczymy podobienstwo
+    kosinusowe (zwykly iloczyn skalarny dwoch wektorow jednostkowych) do
+    kazdej z nich, i wybieramy NAJLEPSZE dopasowanie. Dopiero to
+    najlepsze dopasowanie porownujemy z jego (indywidualnie
+    skalibrowanym!) progiem - rozne osoby moga miec rozne progi, jesli ich
+    zdjecia treningowe byly mniej lub bardziej jednoznaczne.
+    """
+    najlepsza_nazwa = None
+    najlepsze_podobienstwo = -1.0
+    najlepszy_prog = 0.5
+
+    for nazwa_osoby, wpis in wzorce.items():
+        podobienstwo = torch.dot(embedding, wpis["centroid"]).item()
+        if podobienstwo > najlepsze_podobienstwo:
+            najlepsze_podobienstwo = podobienstwo
+            najlepsza_nazwa = nazwa_osoby
+            najlepszy_prog = wpis["prog"]
+
+    if najlepsza_nazwa is not None and najlepsze_podobienstwo >= najlepszy_prog + korekta_progu:
+        return najlepsza_nazwa, najlepsze_podobienstwo
+    return "Nieznana osoba", najlepsze_podobienstwo
 
 
 def main() -> None:
     argumenty = parsuj_argumenty()
     urzadzenie = pobierz_urzadzenie()
 
-    model, klasy = wczytaj_model(urzadzenie)
+    wzorce = wczytaj_wzorce(urzadzenie)
+    print(f"[info] Wczytano wzorce dla {len(wzorce)} osob: {list(wzorce.keys())}")
+
+    ekstraktor = zbuduj_ekstraktor_cech().to(urzadzenie)
     detektor = DetektorTwarzy()
 
-    # Przeksztalcenia musza byc IDENTYCZNE jak te uzyte przy walidacji modelu
-    # w kroku 3 (bez augmentacji losowych) - inaczej porownywalibysmy jablka
-    # z gruszkami.
+    # Przeksztalcenia musza byc IDENTYCZNE jak te uzyte przy liczeniu
+    # wzorcow w kroku 3 (bez augmentacji losowych) - inaczej porownywalibysmy
+    # jablka z gruszkami.
     przygotuj_obraz = transforms.Compose(
         [
             # ToPILImage zamienia tablice numpy (obraz z OpenCV) na obiekt
@@ -148,6 +183,12 @@ def main() -> None:
                 print("[blad] Nie udalo sie odczytac klatki z kamery.")
                 break
 
+            # Odbicie lustrzane (patrz szczegolowy komentarz w
+            # 00_test_detekcji.py) - dzieki niemu podglad na ekranie
+            # zachowuje sie tak samo intuicyjnie jak w kazdej aplikacji do
+            # wideorozmow (ruch w lewo = obraz w lewo).
+            klatka = cv2.flip(klatka, 1)
+
             wykryte_twarze = detektor.wykryj(klatka)
 
             # Rozpoznawanie osob dzieje sie osobno dla kazdej wykrytej
@@ -171,32 +212,21 @@ def main() -> None:
                 # jedno pojedyncze zdjecie, wiec udajemy "paczke" o rozmiarze 1.
                 tensor_wejsciowy = przygotuj_obraz(wycinek_rgb).unsqueeze(0).to(urzadzenie)
 
-                # torch.no_grad() wylacza sledzenie gradientow - podczas
-                # samego rozpoznawania (inferencji) nie trenujemy modelu,
-                # wiec gradienty sa niepotrzebne i tylko zajmowalyby pamiec.
-                with torch.no_grad():
-                    surowe_wyniki = model(tensor_wejsciowy)
-                    # Funkcja softmax zamienia surowe wyniki sieci (tzw.
-                    # logity) na prawdopodobienstwa, ktore sumuja sie do 1.0
-                    # - dzieki temu mozemy mowic o "pewnosci" w procentach.
-                    # dim=1 mowi, ze normalizujemy wzdluz wymiaru klas (a nie
-                    # wzdluz wymiaru paczki), a "[0]" wyciaga wynik dla
-                    # jedynego zdjecia w naszej "paczce" o rozmiarze 1.
-                    prawdopodobienstwa = F.softmax(surowe_wyniki, dim=1)[0]
-                    # torch.max zwraca jednoczesnie najwieksza wartosc
-                    # (pewnosc) oraz jej indeks (indeks_klasy) - czyli ktora
-                    # osoba zostala uznana za "najbardziej prawdopodobna".
-                    pewnosc, indeks_klasy = torch.max(prawdopodobienstwa, dim=0)
+                # oblicz_znormalizowane_cechy() sama w sobie uzywa juz
+                # torch.no_grad() (patrz common/model.py) - nie trenujemy
+                # niczego podczas rozpoznawania na zywo, wiec gradienty sa
+                # tu zupelnie niepotrzebne.
+                embedding = oblicz_znormalizowane_cechy(ekstraktor, tensor_wejsciowy)[0]
 
-                # .item() wyciaga zwykla liczbe Pythona z jednoelementowego
-                # tensora PyTorch - potrzebne do dalszych porownan/formatowania.
-                pewnosc = pewnosc.item()
-                if pewnosc >= argumenty.prog_pewnosci:
-                    etykieta = f"{klasy[indeks_klasy.item()]} ({pewnosc * 100:.0f}%)"
-                    kolor_ramki = KOLOR_ROZPOZNANY
-                else:
-                    etykieta = f"Nieznana osoba ({pewnosc * 100:.0f}%)"
+                etykieta_osoby, podobienstwo = rozpoznaj_twarz(
+                    embedding, wzorce, argumenty.korekta_progu
+                )
+                if etykieta_osoby == "Nieznana osoba":
+                    etykieta = f"{etykieta_osoby} ({podobienstwo * 100:.0f}%)"
                     kolor_ramki = KOLOR_NIEZNANY
+                else:
+                    etykieta = f"{etykieta_osoby} ({podobienstwo * 100:.0f}%)"
+                    kolor_ramki = KOLOR_ROZPOZNANY
 
                 cv2.rectangle(
                     klatka,

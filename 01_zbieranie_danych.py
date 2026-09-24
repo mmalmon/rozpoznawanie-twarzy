@@ -102,6 +102,12 @@ def main() -> None:
                 print("[blad] Nie udalo sie odczytac klatki z kamery.")
                 break
 
+            # Odbicie lustrzane (patrz szczegolowy komentarz w
+            # 00_test_detekcji.py) - dzieki niemu zdjecia treningowe i
+            # podglad na ekranie zachowuja sie tak samo intuicyjnie jak w
+            # kazdej aplikacji do wideorozmow (ruch w lewo = obraz w lewo).
+            klatka = cv2.flip(klatka, 1)
+
             wykryte_twarze = detektor.wykryj(klatka)
             # .copy() tworzy niezalezna kopie klatki do rysowania podgladu -
             # dzieki temu oryginalna "klatka" pozostaje czysta (bez
