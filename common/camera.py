@@ -16,8 +16,25 @@ rozdzielczosci kamery.
 
 from __future__ import annotations
 
+# "from __future__ import annotations" to specjalny import techniczny (nie
+# zwykla biblioteka) - mowi Pythonowi, zeby traktowal adnotacje typow (np.
+# "-> list[WykrytaKamera]") jako zwykly tekst, a nie wyliczal ich od razu.
+# Dzieki temu mozemy pisac nowoczesne, czytelniejsze adnotacje typow (np.
+# "list[int]" zamiast starszego "List[int]") nawet na starszych wersjach
+# Pythona. To nie zmienia dzialania programu - tylko ulatwia czytanie kodu
+# i podpowiedzi w edytorze.
+
+# dataclass to "dekorator" (funkcja ozdabiajaca inna funkcje/klase) z
+# biblioteki standardowej Pythona. Automatycznie generuje dla naszej klasy
+# metody takie jak __init__ (konstruktor) czy __repr__ (wyswietlanie),
+# na podstawie samej listy pol - bez pisania tego recznie. Uzywamy jej
+# ponizej do zdefiniowania WykrytaKamera.
 from dataclasses import dataclass
 
+# cv2 to nazwa modulu biblioteki OpenCV (Open Source Computer Vision) po
+# zainstalowaniu pakietu "opencv-python". To glowna biblioteka tego
+# projektu - obsluguje kamere, przetwarzanie obrazu i (w common/face_detector.py)
+# detekcje twarzy.
 import cv2
 
 # Docelowa rozdzielczosc probna uzywana przy wykrywaniu mozliwosci kamery -
@@ -62,21 +79,44 @@ def wykryj_dostepne_kamery(maks_indeks: int = 5) -> list[WykrytaKamera]:
     """
     znalezione_kamery: list[WykrytaKamera] = []
 
+    # Petla "for" po kolejnych indeksach - system operacyjny numeruje kamery
+    # od 0 wzwyz w kolejnosci, w jakiej je wykryl (kolejnosc ta moze sie
+    # zmienic np. po ponownym podlaczeniu kamery USB, dlatego zawsze warto
+    # sprawdzic to na nowo zamiast zakladac "na sztywno", ze RC16 to zawsze
+    # indeks 1).
     for indeks in range(maks_indeks):
-        # CAP_DSHOW to backend systemu Windows do obslugi kamer USB (UVC).
+        # cv2.VideoCapture(...) probuje otworzyc polaczenie z kamera o danym
+        # indeksie. CAP_DSHOW to nazwa konkretnego "backendu" (sterownika
+        # posredniczacego) systemu Windows do obslugi kamer USB (UVC).
         # Bez niego OpenCV czasem ignoruje nasze zadania zmiany FOURCC/rozdzielczosci.
         kamera = cv2.VideoCapture(indeks, cv2.CAP_DSHOW)
         if not kamera.isOpened():
+            # isOpened() zwraca False, gdy pod danym indeksem nie ma zadnej
+            # kamery (np. sprawdzamy indeks 3, a w systemie sa tylko 2
+            # kamery) - wtedy po prostu przechodzimy do kolejnego indeksu.
             kamera.release()
             continue
 
+        # kamera.set(...) prosi kamere o zmiane jej ustawien. Zwraca True/False,
+        # ale NIE gwarantuje, ze zadanie zostalo spelnione w 100% - dlatego
+        # kilka linijek nizej odczytujemy, co faktycznie zostalo ustawione.
         kamera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         kamera.set(cv2.CAP_PROP_FRAME_WIDTH, PROBNA_SZEROKOSC_4K)
         kamera.set(cv2.CAP_PROP_FRAME_HEIGHT, PROBNA_WYSOKOSC_4K)
 
+        # kamera.read() pobiera jedna klatke obrazu. Pierwsza wartosc zwrocona
+        # (tutaj: udalo_sie_odczytac) mowi, czy odczyt sie powiodl - druga
+        # wartosc to sama klatka (obraz), ktorej tutaj nie potrzebujemy,
+        # wiec zapisujemy ja do zmiennej "_" (konwencja Pythona oznaczajaca
+        # "ta wartosc celowo ignorujemy").
         udalo_sie_odczytac, _ = kamera.read()
+        # kamera.get(...) odczytuje AKTUALNA wartosc danego ustawienia -
+        # czyli to, co kamera naprawde przyznala, a nie to, o co prosilismy.
         szerokosc = int(kamera.get(cv2.CAP_PROP_FRAME_WIDTH))
         wysokosc = int(kamera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # release() zwalnia dostep do kamery - bardzo wazne, zeby inne
+        # aplikacje (albo kolejne uruchomienie tej petli) mogly z niej
+        # korzystac. Bez tego kamera "zawiesilaby sie" jako zajeta.
         kamera.release()
 
         if udalo_sie_odczytac:
@@ -103,6 +143,8 @@ def wybierz_kamere_interaktywnie(maks_indeks: int = 5) -> int:
         )
 
     if len(kamery) == 1:
+        # if/else po dlugosci listy: gdy jest tylko jedna kamera, nie ma
+        # sensu pytac uczniow o wybor - po prostu jej uzywamy.
         kamera = kamery[0]
         print(
             f"[kamera] Znaleziono jedna kamere: --kamera {kamera.indeks} "
@@ -122,9 +164,17 @@ def wybierz_kamere_interaktywnie(maks_indeks: int = 5) -> int:
             f"{kamera.maks_szerokosc}x{kamera.maks_wysokosc}{podpowiedz}"
         )
 
+    # Zbior (set) poprawnych indeksow - uzywamy zbioru zamiast listy, bo
+    # sprawdzenie "czy liczba nalezy do zbioru" (operator "in") jest bardzo
+    # szybkie, niezaleznie od tego, ile jest kamer.
     poprawne_indeksy = {kamera.indeks for kamera in kamery}
     while True:
+        # input() wstrzymuje program i czeka, az uczen wpisze cos w konsoli
+        # i nacisnie Enter. .strip() usuwa przypadkowe spacje/entery na
+        # poczatku i koncu wpisanego tekstu.
         wybor = input(f"\nWybierz numer kamery ({sorted(poprawne_indeksy)}): ").strip()
+        # isdigit() sprawdza, czy tekst sklada sie WYLACZNIE z cyfr - dzieki
+        # temu unikamy bledu, gdyby uczen wpisal np. litery zamiast liczby.
         if wybor.isdigit() and int(wybor) in poprawne_indeksy:
             return int(wybor)
         print("Niepoprawny wybor, sprobuj ponownie.")
@@ -158,6 +208,10 @@ def otworz_kamere(
         )
 
     kamera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    # cv2.VideoWriter_fourcc(*"MJPG") zamienia napis "MJPG" na specjalny
+    # 4-bajtowy kod liczbowy (FOURCC), ktorego oczekuje kamera/sterownik -
+    # gwiazdka (*) przed "MJPG" rozpakowuje napis na 4 pojedyncze znaki
+    # jako oddzielne argumenty tej funkcji.
     kamera.set(cv2.CAP_PROP_FRAME_WIDTH, szerokosc)
     kamera.set(cv2.CAP_PROP_FRAME_HEIGHT, wysokosc)
     kamera.set(cv2.CAP_PROP_FPS, fps)

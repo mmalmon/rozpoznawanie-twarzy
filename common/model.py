@@ -25,8 +25,18 @@ zajmuje minuty zamiast dni, nawet na sredniej klasy laptopowym GPU.
 
 from __future__ import annotations
 
+# torch to glowna biblioteka PyTorch - silnik do budowy i trenowania sieci
+# neuronowych, dzialajacy zarowno na CPU, jak i na GPU (kartach graficznych
+# obslugujacych CUDA, np. RTX PRO Blackwell).
 import torch
+# nn (od "neural network") to podmodul torch zawierajacy gotowe "klocki" do
+# budowy sieci neuronowych - warstwy (np. nn.Linear), funkcje straty
+# (np. nn.CrossEntropyLoss) itd.
 from torch import nn
+# models to podmodul biblioteki torchvision z gotowymi, popularnymi
+# architekturami sieci neuronowych do przetwarzania obrazu (w tym
+# MobileNetV3-Small uzywana w tym projekcie), czesto razem z wagami
+# wytrenowanymi wczesniej na zbiorze ImageNet.
 from torchvision import models
 
 # Standardowy rozmiar wejscia (szerokosc x wysokosc w pikselach) dla sieci
@@ -57,6 +67,11 @@ def zbuduj_model(
         trenowac wylacznie nowy klasyfikator.
     """
     wagi = models.MobileNet_V3_Small_Weights.DEFAULT if pretrenowany else None
+    # MobileNet_V3_Small_Weights.DEFAULT to obiekt opisujacy, ktore
+    # konkretnie wagi pobrac (torchvision zrobi to automatycznie przy
+    # pierwszym uruchomieniu i zapamieta je w pamieci podrecznej systemu -
+    # kolejne uruchomienia beda juz szybsze, bo nie trzeba niczego pobierac
+    # ponownie).
     model = models.mobilenet_v3_small(weights=wagi)
 
     if zamroz_ekstraktor_cech:
@@ -94,7 +109,7 @@ def odmroz_ekstraktor_cech(model: nn.Module, liczba_ostatnich_blokow: int = 3) -
 
 def pobierz_urzadzenie() -> torch.device:
     """Zwraca urzadzenie obliczeniowe, na ktorym powinien dzialac model:
-    kartę graficzna (GPU, jesli jest dostepna i obslugiwana przez CUDA) albo
+    karte graficzna (GPU, jesli jest dostepna i obslugiwana przez CUDA) albo
     procesor (CPU) w przeciwnym razie.
 
     DLA UCZNIOW: trening sieci neuronowej to w gruncie rzeczy ogromna liczba

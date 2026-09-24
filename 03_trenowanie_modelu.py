@@ -29,14 +29,32 @@ Wynik:
 
 from __future__ import annotations
 
+# argparse - obsluga argumentow uruchomieniowych (--epoki, --batch-size itd.).
 import argparse
+# json - zapis/odczyt danych w formacie JSON (tu: listy nazw rozpoznawanych
+# osob, zeby skrypt 04 wiedzial, ktory numer wyjscia sieci odpowiada ktorej
+# osobie).
 import json
+# time - do mierzenia, ile trwala kazda epoka treningu.
 import time
+# Path - obiektowa reprezentacja sciezek plikow/folderow.
 from pathlib import Path
 
+# torch - glowny silnik PyTorch do obliczen na tensorach (tablicach
+# wielowymiarowych) i budowy/trenowania sieci neuronowych.
 import torch
+# nn - "klocki" do budowy sieci (funkcje straty itp.).
+# optim - podmodul z algorytmami optymalizacji (tu: Adam), czyli metodami
+# aktualizacji wag sieci na podstawie wyliczonych gradientow.
 from torch import nn, optim
+# DataLoader automatycznie dzieli caly zbior danych na mniejsze paczki
+# (batch) i w tle rownolegle wczytuje/przygotowuje kolejne paczki, zeby
+# karta graficzna nigdy nie czekala bezczynnie na dane.
 from torch.utils.data import DataLoader
+# datasets.ImageFolder to gotowa klasa z torchvision, ktora automatycznie
+# wczytuje zdjecia z folderow (klasa = nazwa podfolderu). transforms to
+# zestaw gotowych przeksztalcen obrazu (zmiana rozmiaru, augmentacja,
+# normalizacja) stosowanych przed podaniem zdjecia do sieci.
 from torchvision import datasets, transforms
 
 from common.model import (
@@ -79,16 +97,35 @@ def przygotuj_zbiory_danych(rozmiar_batcha: int) -> tuple[DataLoader, DataLoader
     # pozostac niezmieniony, bo sluzy do uczciwej oceny modelu.
     przeksztalcenia_treningowe = transforms.Compose(
         [
+            # transforms.Compose laczy liste pojedynczych przeksztalcen w
+            # jeden "potok" - kazde zdjecie przejdzie przez nie po kolei,
+            # od gory do dolu.
             transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
+            # RandomHorizontalFlip - z prawdopodobienstwem 50% odbija zdjecie
+            # w poziomie (lustrzane odbicie) - twarz wyglada naturalnie
+            # zarowno w oryginale, jak i po takim odbiciu.
             transforms.RandomHorizontalFlip(p=0.5),
+            # RandomRotation - losowo obraca zdjecie o maksymalnie 10 stopni
+            # w dowolna strone, symulujac lekkie przechylenie glowy.
             transforms.RandomRotation(10),
+            # ColorJitter - losowo zmienia jasnosc/kontrast/nasycenie
+            # kolorow, symulujac rozne warunki oswietlenia w sali lekcyjnej.
             transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
+            # ToTensor zamienia obraz (dotychczas w formacie PIL/numpy) na
+            # tensor PyTorch - podstawowy typ danych, na ktorym dziala siec
+            # neuronowa - i skaluje wartosci pikseli z zakresu 0-255 do 0-1.
             transforms.ToTensor(),
+            # Normalize odejmuje srednia i dzieli przez odchylenie standardowe
+            # dla kazdego kanalu koloru - patrz wyjasnienie w common/model.py
+            # (musi byc identyczne jak podczas oryginalnego treningu na ImageNet).
             transforms.Normalize(SREDNIA_IMAGENET, ODCHYLENIE_IMAGENET),
         ]
     )
     przeksztalcenia_walidacyjne = transforms.Compose(
         [
+            # Zbior walidacyjny NIE dostaje augmentacji (RandomHorizontalFlip,
+            # RandomRotation, ColorJitter) - tylko przeskalowanie i normalizacje,
+            # bo chcemy oceniac model na "czystych", niezmienionych zdjeciach.
             transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
             transforms.ToTensor(),
             transforms.Normalize(SREDNIA_IMAGENET, ODCHYLENIE_IMAGENET),
@@ -97,6 +134,8 @@ def przygotuj_zbiory_danych(rozmiar_batcha: int) -> tuple[DataLoader, DataLoader
 
     # ImageFolder automatycznie tworzy klasy na podstawie nazw podfolderow -
     # np. data/processed/train/jan_kowalski/*.jpg -> klasa "jan_kowalski".
+    # Parametr "transform" mowi, jaki potok przeksztalcen zastosowac do
+    # kazdego wczytywanego zdjecia.
     zbior_treningowy = datasets.ImageFolder(
         FOLDER_PRZETWORZONYCH_DANYCH / "train", transform=przeksztalcenia_treningowe
     )
@@ -104,6 +143,13 @@ def przygotuj_zbiory_danych(rozmiar_batcha: int) -> tuple[DataLoader, DataLoader
         FOLDER_PRZETWORZONYCH_DANYCH / "val", transform=przeksztalcenia_walidacyjne
     )
 
+    # DataLoader dzieli caly zbior na paczki (batch) po "rozmiar_batcha"
+    # zdjec i podaje je sieci po kolei. shuffle=True losowo miesza
+    # kolejnosc zdjec w kazdej epoce treningowej (zeby siec nie uczyla sie
+    # przypadkiem "kolejnosci" danych) - dla walidacji shuffle nie jest
+    # potrzebne, bo tylko oceniamy model, nie trenujemy go. num_workers=2
+    # oznacza, ze wczytywaniem/przygotowywaniem kolejnych paczek zajmuja sie
+    # 2 dodatkowe procesy rownolegle, w tle, podczas gdy GPU liczy poprzednia paczke.
     ladowarka_treningowa = DataLoader(
         zbior_treningowy, batch_size=rozmiar_batcha, shuffle=True, num_workers=2
     )
@@ -131,6 +177,10 @@ def wykonaj_epoke(
     na calym zbiorze.
     """
     czy_trening = optymalizator is not None
+    # model.train(True/False) przelacza siec miedzy trybem treningowym a
+    # ewaluacyjnym - wplywa to na warstwy takie jak Dropout czy BatchNorm,
+    # ktore powinny zachowywac sie inaczej podczas uczenia niz podczas
+    # zwyklego uzywania/oceny modelu.
     model.train(czy_trening)
 
     suma_straty, liczba_trafien, liczba_probek = 0.0, 0, 0
@@ -139,9 +189,18 @@ def wykonaj_epoke(
     # gradientow - nie sa one potrzebne, gdy tylko oceniamy model, a ich
     # pominiecie oszczedza pamiec i przyspiesza obliczenia.
     with torch.set_grad_enabled(czy_trening):
+        # Petla po kolejnych paczkach (batch) danych z ladowarki - kazda
+        # paczka to para: "obrazy" (tensor kilkudziesieciu zdjec naraz) i
+        # "etykiety" (numery klas/osob, do ktorych te zdjecia naleza).
         for obrazy, etykiety in ladowarka:
+            # .to(urzadzenie) przenosi dane na wybrane urzadzenie
+            # obliczeniowe (GPU albo CPU) - obliczenia moga sie odbywac
+            # tylko wtedy, gdy model i dane znajduja sie na tym samym
+            # urzadzeniu.
             obrazy, etykiety = obrazy.to(urzadzenie), etykiety.to(urzadzenie)
 
+            # "Przejscie w przod" (forward pass) - podajemy obrazy do sieci
+            # i dostajemy jej surowe przewidywania (logity) dla kazdej klasy.
             wyniki = model(obrazy)
             strata = funkcja_straty(wyniki, etykiety)
 
@@ -184,6 +243,14 @@ def main() -> None:
     najlepsza_trafnosc_walidacyjna = 0.0
 
     # --- Etap 1: trening samego klasyfikatora (ekstraktor cech zamrozony) ---
+    # optim.Adam to popularny algorytm optymalizacji (aktualizacji wag sieci)
+    # - automatycznie dostosowuje "krok" uczenia dla kazdego parametru osobno,
+    # co zwykle daje szybsza i stabilniejsza zbieznosc niz prostszy SGD.
+    # Wyrazenie generatorowe "(parametr for parametr in model.parameters()
+    # if parametr.requires_grad)" przekazuje optymalizatorowi TYLKO te
+    # parametry, ktore nie sa zamrozone (patrz common/model.py) - dzieki
+    # temu optymalizator w ogole nie probuje aktualizowac zamrozonego
+    # ekstraktora cech.
     optymalizator = optim.Adam(
         (parametr for parametr in model.parameters() if parametr.requires_grad), lr=argumenty.lr
     )

@@ -26,13 +26,32 @@ nowoczesniejszy (np. z biblioteki MediaPipe) i porownac szybkosc/skutecznosc.
 
 from __future__ import annotations
 
+# atexit pozwala zarejestrowac funkcje, ktora ma sie wykonac automatycznie
+# tuz przed zakonczeniem programu (uzywamy tego do posprzatania plikow
+# tymczasowych, patrz funkcja _wczytaj_kaskade_bezpiecznie ponizej).
 import atexit
+# shutil (od "shell utilities") dostarcza operacje na plikach/folderach
+# wyzszego poziomu niz podstawowy Python, np. kopiowanie plikow (copyfile)
+# czy usuwanie calych folderow razem z zawartoscia (rmtree).
 import shutil
+# tempfile tworzy tymczasowe pliki/foldery zarzadzane przez system
+# operacyjny - idealne na potrzeby chwilowej kopii pliku kaskady.
 import tempfile
+# dataclass - patrz wyjasnienie w common/camera.py; automatycznie generuje
+# konstruktor i inne metody dla prostej klasy przechowujacej dane.
 from dataclasses import dataclass
+# Path to obiektowa reprezentacja sciezki do pliku/folderu z modulu
+# pathlib - wygodniejsza i bezpieczniejsza w uzyciu niz skladanie sciezek
+# recznie jako zwykle napisy (stringi).
 from pathlib import Path
 
+# cv2 - biblioteka OpenCV, tutaj uzywana do wczytania kaskady Haara i
+# przetworzenia obrazu (konwersja na szarosc, wyrownanie histogramu).
 import cv2
+# numpy (importowana pod skrocona nazwa "np" - to powszechna konwencja w
+# calym swiecie Pythona) to biblioteka do szybkich obliczen na tablicach
+# liczbowych. Kazda klatka obrazu z kamery jest w Pythonie reprezentowana
+# jako tablica numpy (np.ndarray) - trojwymiarowa: [wysokosc, szerokosc, kanaly_koloru].
 import numpy as np
 
 
@@ -82,6 +101,10 @@ def _wczytaj_kaskade_bezpiecznie(nazwa_pliku: str) -> cv2.CascadeClassifier:
     stamtad.
     """
     sciezka_zrodlowa = Path(cv2.data.haarcascades) / nazwa_pliku
+    # cv2.data.haarcascades to sciezka do folderu WEWNATRZ zainstalowanego
+    # pakietu opencv-python, w ktorym producent OpenCV dolacza gotowe pliki
+    # kaskad Haara (wytrenowane juz przez tworcow biblioteki) - nie musimy
+    # ich sami trenowac ani pobierac osobno z internetu.
 
     kaskada = cv2.CascadeClassifier(str(sciezka_zrodlowa))
     if not kaskada.empty():

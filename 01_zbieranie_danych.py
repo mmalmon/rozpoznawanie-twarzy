@@ -19,7 +19,7 @@ w folderze data/raw/<osoba>/.
 
 Wskazowki dla dobrej jakosci danych (patrz tez README.md):
   - zbierz min. 150-300 zdjec na osobe,
-  - rozne kąty głowy (lekko w lewo/prawo/gore/dol), rozne wyrazy twarzy,
+  - rozne katy glowy (lekko w lewo/prawo/gore/dol), rozne wyrazy twarzy,
   - rozne oswietlenie (dzien/wieczor, swiatlo z roznych stron),
   - z okularami i bez, jesli osoba je czasem nosi,
   - staraj sie NIE zbierac serii identycznych, nieruchomych klatek - lepiej
@@ -28,12 +28,18 @@ Wskazowki dla dobrej jakosci danych (patrz tez README.md):
 
 from __future__ import annotations
 
+# argparse - obsluga argumentow uruchomieniowych skryptu (--osoba, --kamera itd.).
 import argparse
+# time - do mierzenia uplywu czasu (np. czy minelo juz 0.3s od ostatniego
+# automatycznego zapisu zdjecia).
 import time
+# Path - obiektowa reprezentacja sciezek plikow/folderow.
 from pathlib import Path
 
+# cv2 - OpenCV: obsluga kamery, rysowanie, skalowanie obrazow.
 import cv2
 
+# Wlasny kod z folderu common/.
 from common.camera import otworz_kamere, wybierz_kamere_interaktywnie
 from common.face_detector import DetektorTwarzy
 from common.imgio import zapisz_obraz
@@ -64,8 +70,15 @@ def parsuj_argumenty() -> argparse.Namespace:
 def main() -> None:
     argumenty = parsuj_argumenty()
 
+    # mkdir(parents=True, exist_ok=True) tworzy folder danej osoby (razem z
+    # ewentualnymi brakujacymi folderami nadrzednymi) - "exist_ok=True"
+    # oznacza, ze NIE zglosi bledu, jesli folder juz istnieje (np. gdy
+    # dogrywamy kolejne zdjecia do wczesniej rozpoczetego zbioru).
     folder_osoby = FOLDER_DANYCH / argumenty.osoba
     folder_osoby.mkdir(parents=True, exist_ok=True)
+    # glob("*.jpg") wyszukuje wszystkie pliki o podanym wzorcu nazwy (tu:
+    # dowolna nazwa konczaca sie na ".jpg") w danym folderze - liczymy je,
+    # zeby wiedziec, ile zdjec mamy juz zebranych z poprzednich uruchomien.
     liczba_juz_zebranych = len(list(folder_osoby.glob("*.jpg")))
 
     indeks_kamery = (
@@ -90,6 +103,10 @@ def main() -> None:
                 break
 
             wykryte_twarze = detektor.wykryj(klatka)
+            # .copy() tworzy niezalezna kopie klatki do rysowania podgladu -
+            # dzieki temu oryginalna "klatka" pozostaje czysta (bez
+            # narysowanych ramek/napisow) i to wlasnie z niej wycinamy
+            # zdjecia zapisywane na dysk.
             podglad = klatka.copy()
 
             # Ramka wokol wykrytej twarzy - tu juz jest zielona, bo to skrypt
@@ -114,9 +131,17 @@ def main() -> None:
             cv2.imshow("Zbieranie danych (q=koniec)", podglad)
 
             klawisz = cv2.waitKey(1) & 0xFF
+            # cv2.waitKey(1) czeka maksymalnie 1 milisekunde na nacisniecie
+            # klawisza i zwraca jego kod - operacja "& 0xFF" (bitowe AND)
+            # jest tu potrzebna technicznie, zeby dzialalo to poprawnie na
+            # wszystkich systemach operacyjnych. 32 to kod klawisza SPACJA
+            # w standardzie ASCII, a ord("s") zamienia litere "s" na jej
+            # kod liczbowy.
             czy_zapisac_teraz = klawisz in (32, ord("s"))  # 32 = kod klawisza SPACJA
 
             if klawisz == ord("a"):
+                # Operator "not" odwraca wartosc logiczna - kazde
+                # nacisniecie "a" przelacza tryb auto-zapisu wlaczony/wylaczony.
                 auto_zapis_wlaczony = not auto_zapis_wlaczony
             if (
                 auto_zapis_wlaczony
@@ -129,6 +154,9 @@ def main() -> None:
                 # Jesli w kadrze jest kilka twarzy (np. ktos przechodzi w
                 # tle), bierzemy najwieksza - jest najblizej kamery, czyli
                 # najprawdopodobniej to osoba, ktora aktualnie pozuje do zdjec.
+                # key=lambda t: t.w * t.h mowi funkcji max(), zeby porownywala
+                # twarze wedlug ich pola powierzchni (szerokosc razy wysokosc),
+                # a nie np. wedlug kolejnosci wykrycia.
                 twarz = max(wykryte_twarze, key=lambda t: t.w * t.h)
                 wycinek = twarz.wytnij(klatka)
                 wycinek = cv2.resize(wycinek, DOCELOWY_ROZMIAR)

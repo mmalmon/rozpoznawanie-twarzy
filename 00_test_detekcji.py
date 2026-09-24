@@ -19,16 +19,30 @@ Nacisnij 'q' lub ESC, aby zakonczyc.
 
 from __future__ import annotations
 
+# argparse to modul standardowej biblioteki Pythona sluzacy do obslugi
+# argumentow uruchomieniowych skryptu (to, co wpisujemy po nazwie skryptu w
+# konsoli, np. "--kamera 1") - dzieki niemu nie musimy recznie parsowac
+# tekstu wpisanego przez uzytkownika.
 import argparse
+# time udostepnia funkcje zwiazane z czasem, tutaj uzywana do zmierzenia,
+# ile sekund minelo miedzy kolejnymi klatkami obrazu (do wyliczenia FPS).
 import time
 
+# cv2 - biblioteka OpenCV odpowiedzialna za obsluge kamery, rysowanie
+# ksztaltow (prostokatow, tekstu) na obrazie i wyswietlanie okna podgladu.
 import cv2
 
+# Importujemy wlasne funkcje z folderu common/ (nasz "wspolny kod"
+# wykorzystywany przez kilka skryptow projektu, zeby nie powielac go w
+# kazdym pliku osobno).
 from common.camera import otworz_kamere, wybierz_kamere_interaktywnie
 from common.face_detector import DetektorTwarzy
 
 
 def parsuj_argumenty() -> argparse.Namespace:
+    """Definiuje i odczytuje argumenty uruchomieniowe skryptu (to, co
+    wpisujemy po nazwie pliku w konsoli, np. "python 00_test_detekcji.py
+    --kamera 1")."""
     parser = argparse.ArgumentParser(description="Test detekcji twarzy na zywo.")
     parser.add_argument(
         "--kamera",
@@ -38,11 +52,20 @@ def parsuj_argumenty() -> argparse.Namespace:
     )
     parser.add_argument("--szerokosc", type=int, default=1920)
     parser.add_argument("--wysokosc", type=int, default=1080)
+    # parse_args() faktycznie odczytuje to, co uzytkownik wpisal w konsoli
+    # (sys.argv) i zwraca obiekt, z ktorego mozemy odczytac kazda wartosc
+    # jako pole, np. argumenty.kamera.
     return parser.parse_args()
 
 
 def main() -> None:
+    """Glowna funkcja skryptu - uruchamiana tylko wtedy, gdy plik jest
+    odpalony bezposrednio (patrz blok if __name__ == "__main__" na koncu
+    pliku), a nie gdy jest importowany przez inny skrypt."""
     argumenty = parsuj_argumenty()
+    # Operator warunkowy "x if warunek else y" w jednej linii: jesli uczen
+    # podal --kamera, uzywamy jej indeksu; jesli nie podal (wartosc None),
+    # pytamy interaktywnie, ktorej kamery uzyc.
     indeks_kamery = (
         argumenty.kamera if argumenty.kamera is not None else wybierz_kamere_interaktywnie()
     )
@@ -54,7 +77,12 @@ def main() -> None:
     poprzedni_czas = time.time()
 
     try:
+        # Petla "while True" dziala w kolko, klatka po klatce, az uczen
+        # nacisnie 'q'/ESC albo wystapi blad odczytu z kamery (wtedy petla
+        # jest przerywana instrukcja "break").
         while True:
+            # kamera.read() zwraca dwie wartosci na raz: flage powodzenia
+            # (czy_odczytano) oraz sama klatke obrazu jako tablice numpy.
             czy_odczytano, klatka = kamera.read()
             if not czy_odczytano:
                 print("[blad] Nie udalo sie odczytac klatki z kamery.")
@@ -66,6 +94,10 @@ def main() -> None:
             # wiemy jeszcze, kto to jest - dlatego ramka jest zolta i bez
             # zadnego imienia (to bedzie krok 4, po wytrenowaniu modelu).
             for twarz in wykryte_twarze:
+                # cv2.rectangle rysuje prostokat na obrazie "klatka" (modyfikuje
+                # go bezposrednio - "w miejscu"): pierwszy punkt to lewy-gorny
+                # rog, drugi to prawy-dolny rog, nastepnie kolor (BGR) i
+                # grubosc linii w pikselach.
                 cv2.rectangle(
                     klatka,
                     (twarz.x, twarz.y),
@@ -81,6 +113,9 @@ def main() -> None:
             fps = 1.0 / max(1e-6, teraz - poprzedni_czas)
             poprzedni_czas = teraz
 
+            # cv2.putText rysuje napis na obrazie: tekst, wspolrzedne lewego-
+            # dolnego rogu tekstu, czcionke, mnoznik jej rozmiaru, kolor
+            # (BGR) i grubosc linii.
             cv2.putText(
                 klatka,
                 f"Wykryto twarzy: {len(wykryte_twarze)}  FPS: {fps:.1f}",

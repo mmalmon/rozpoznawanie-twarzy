@@ -28,9 +28,16 @@ Uzycie:
 
 from __future__ import annotations
 
+# argparse - obsluga argumentow uruchomieniowych (--val-split, --seed).
 import argparse
+# random - generator liczb (i wyborow) pseudolosowych z biblioteki
+# standardowej Pythona; uzywamy go do losowego, ale powtarzalnego
+# przemieszania zdjec przed podzialem na train/val.
 import random
+# shutil - operacje na plikach wyzszego poziomu: kopiowanie (copy2) i
+# usuwanie calych folderow z zawartoscia (rmtree).
 import shutil
+# Path - obiektowa reprezentacja sciezek plikow/folderow.
 from pathlib import Path
 
 FOLDER_SUROWYCH_DANYCH = Path(__file__).parent / "data" / "raw"
@@ -82,10 +89,20 @@ def main() -> None:
         # zdjec (ktore moga byc do siebie bardzo podobne, jesli byly zrobione
         # jedno po drugim).
         random.shuffle(zdjecia)
+        # int(...) obcina liczbe do czesci calkowitej (np. 0.2 * 157 = 31.4
+        # -> 31 zdjec do walidacji). max(1, ...) gwarantuje, ze nawet przy
+        # bardzo malej liczbie zdjec w zbiorze walidacyjnym znajdzie sie co
+        # najmniej jedno zdjecie.
         liczba_walidacyjnych = max(1, int(len(zdjecia) * argumenty.val_split))
+        # Wycinanie listy (tzw. "slicing"): [:N] bierze pierwsze N elementow,
+        # [N:] bierze wszystkie POZOSTALE - dzieki temu kazde zdjecie trafia
+        # albo do zbioru walidacyjnego, albo treningowego, nigdy do obu naraz.
         zdjecia_walidacyjne = zdjecia[:liczba_walidacyjnych]
         zdjecia_treningowe = zdjecia[liczba_walidacyjnych:]
 
+        # Petla po dwoch parach (nazwa_zbioru, lista_zdjec) - zamiast pisac
+        # niemal identyczny kod kopiowania dwukrotnie (osobno dla "train" i
+        # osobno dla "val"), robimy to raz w petli dla obu przypadkow.
         for nazwa_zbioru, zdjecia_zbioru in (
             ("train", zdjecia_treningowe),
             ("val", zdjecia_walidacyjne),
@@ -93,6 +110,10 @@ def main() -> None:
             folder_wyjsciowy = FOLDER_PRZETWORZONYCH_DANYCH / nazwa_zbioru / folder_osoby.name
             folder_wyjsciowy.mkdir(parents=True, exist_ok=True)
             for sciezka_zdjecia in zdjecia_zbioru:
+                # shutil.copy2 kopiuje plik razem z jego metadanymi (np.
+                # data modyfikacji) - uzywamy kopiowania, a nie przenoszenia,
+                # zeby oryginalne zdjecia w data/raw/ zawsze zostaly
+                # nietkniete (mozna bezpiecznie uruchomic ten skrypt ponownie).
                 shutil.copy2(sciezka_zdjecia, folder_wyjsciowy / sciezka_zdjecia.name)
 
         podsumowanie.append((folder_osoby.name, len(zdjecia_treningowe), len(zdjecia_walidacyjne)))

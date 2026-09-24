@@ -17,6 +17,8 @@ podejrzenia sytuacji z wyprzedzeniem albo do debugowania.
 
 from __future__ import annotations
 
+# Importujemy wlasna funkcje z folderu common/ - ten sam kod, ktorego
+# uzywaja skrypty 00, 01 i 04 do wykrywania kamer podlaczonych do komputera.
 from common.camera import wykryj_dostepne_kamery
 
 
