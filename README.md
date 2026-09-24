@@ -360,6 +360,37 @@ mimo to się zdarza:
 - Jeśli detektor Haar łapie fragment twarzy (np. samo czoło) jako całą
   twarz, sprawdźcie `min_rozmiar_wzgledny` w `common/face_detector.py` —
   zwiększenie go wymusza większe (a więc bardziej kompletne) wykrycia.
+- Sprawdźcie jakość zdjęć w `data/raw/<osoba>` — zamazane, ciemne albo
+  puste (samo tło, bez wyraźnej twarzy) zdjęcia zaniżają "podobienstwo
+  wlasne min" podczas kalibracji, co obniża wyliczony próg i ułatwia
+  fałszywe rozpoznania. Usuńcie słabe zdjęcia z `data/raw`, a potem
+  koniecznie uruchomcie PONOWNIE `python 02_podzial_danych.py` (żeby
+  odświeżyć `data/processed` z aktualnej zawartości `data/raw` — sam
+  `03_trenowanie_modelu.py` tego nie robi) i dopiero potem
+  `python 03_trenowanie_modelu.py`.
+
+**Model myli mnie z bliską osobą (np. rodzeństwem/dzieckiem), które
+fizycznie jest do mnie podobne — pokazuje ją jako mnie z wysokim
+procentem, albo tuż pod progiem jako "nieznana osoba".** To nie błąd, tylko
+naturalne ograniczenie automatycznej kalibracji: próg jest dobierany na
+podstawie zdjęć folderu "nieznajomy" (przypadkowe twarze z internetu) —
+a bliscy krewni są znacznie trudniejszym "negatywem" niż losowa obca
+twarz, bo mają realnie podobne rysy. Dwa sposoby na poprawę:
+1. **Szybki (bez nowych zdjęć):** podnieście margines bezpieczeństwa przy
+   kalibracji, np. `python 03_trenowanie_modelu.py --margines-bezpieczenstwa 0.05`
+   — ale uważajcie: zbyt duży margines może sprawić, że próg przekroczy
+   nawet Wasze WŁASNE najsłabsze podobieństwo (widoczne w logu jako
+   "podobienstwo wlasne min") i program zacznie odrzucać też Was. Program
+   wypisuje to minimum w logu — dobierzcie margines tak, żeby
+   `środek(min_wlasne, maks_obce) + margines` został WYRAŹNIE poniżej
+   min_wlasne.
+2. **Najskuteczniejszy (edukacyjnie bardzo pouczający — "hard negative
+   mining"):** dorzućcie kilka-kilkanaście zdjęć tej podobnej osoby (np.
+   rodzeństwa) do folderu `data/raw/nieznajomy/` PRZED krokiem 2/3.
+   Kalibracja "zobaczy" wtedy prawdziwie trudny przypadek i dobierze
+   wyższy, bezpieczniejszy próg — dokładnie tak, jak w prawdziwych
+   systemach rozpoznawania twarzy uczy się je odróżniać bliźnięta czy
+   rodzeństwo.
 
 **Podgląd z kamery wygląda na przycięty/przesunięty w prawo-dół, mimo że
 kamera "widzi" całą scenę.** To najczęściej NIE jest błąd w kodzie ani

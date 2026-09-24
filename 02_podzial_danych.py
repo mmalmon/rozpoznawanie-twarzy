@@ -75,6 +75,14 @@ def main() -> None:
     if FOLDER_PRZETWORZONYCH_DANYCH.exists():
         shutil.rmtree(FOLDER_PRZETWORZONYCH_DANYCH)
 
+    # Katalog data/processed jest w .gitignore (bo zawiera duzo zdjec) - w
+    # repozytorium trzymamy jedynie pusty plik .gitkeep, zeby sam PUSTY
+    # folder byl widoczny w git (Git nie sledzi pustych folderow). rmtree
+    # powyzej usuwa go razem z reszta, wiec odtwarzamy go od nowa, aby
+    # przypadkowo nie zniknal z repozytorium przy kolejnym "git add".
+    FOLDER_PRZETWORZONYCH_DANYCH.mkdir(parents=True, exist_ok=True)
+    (FOLDER_PRZETWORZONYCH_DANYCH / ".gitkeep").touch()
+
     podsumowanie = []
     for folder_osoby in sorted(foldery_osob):
         zdjecia = sorted(folder_osoby.glob("*.jpg"))
