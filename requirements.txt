@@ -1,0 +1,17 @@
+# Zaleznosci podstawowe (dziala na CPU od razu po instalacji)
+opencv-python>=4.9
+numpy>=1.26
+Pillow>=10.0
+scikit-learn>=1.4
+matplotlib>=3.8
+tqdm>=4.66
+
+# UWAGA dot. PyTorch (torch, torchvision):
+# NIE instaluj ich z tego pliku przez zwykle "pip install -r requirements.txt",
+# jesli chcesz uzyc GPU (RTX PRO 500 Blackwell). Zamiast tego wykonaj
+# najpierw komende z sekcji "Instalacja PyTorch z obsluga CUDA" w README.md,
+# a dopiero potem doinstaluj reszte z tego pliku.
+#
+# Wersje CPU-only (dzialaja wszedzie, ale bez przyspieszenia GPU):
+torch>=2.6
+torchvision>=0.21

@@ -1,0 +1,23 @@
+# Dane treningowe i wyniki treningu - nie commitujemy zdjec uczniow ani modeli
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+models/*
+!models/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Narzedzia / IDE
+.vscode/
+.idea/
+
+# System
+.DS_Store
+Thumbs.db
