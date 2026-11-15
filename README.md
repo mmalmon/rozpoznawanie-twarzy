@@ -138,8 +138,13 @@ rozpoznawanie twarzy/
 │   ├── model.py                 # definicja modelu (ekstraktor cech / embeddingi)
 │   └── uruchom_w_venv.py        # restart skryptu w środowisku .venv
 ├── gui/
-│   ├── main.py                  # eksperymentalne GUI Tkinter (podgląd detekcji twarzy)
-│   ├── config.yaml              # konfiguracja GUI
+│   ├── main.py                  # panel desktopowy: pywebview + Flask + Bootstrap (styl AdminLTE)
+│   ├── server.py                # lokalne API i strumień MJPEG (tylko 127.0.0.1)
+│   ├── camera_stream.py         # wątek kamery, detekcja i klatki JPEG
+│   ├── tkinter_app.py           # awaryjne GUI w Tkinterze
+│   ├── templates/index.html     # widok panelu
+│   ├── static/                  # Bootstrap 5 (lokalnie), własny CSS i JS
+│   ├── config.yaml              # konfiguracja starego GUI Tkinter
 │   └── README.md                # opis GUI
 ├── src/
 │   └── detection/detector.py    # nakładka na common/face_detector.py używana przez GUI
@@ -154,10 +159,12 @@ rozpoznawanie twarzy/
 └── README.md
 ```
 
-> **GUI (`gui/main.py`) jest eksperymentalne.** Pokazuje podgląd z kamery i
-> rysuje ramki wokół wykrytych twarzy, ale nie prowadzi jeszcze rozpoznawania
-> osób ani nie steruje zbieraniem danych — do pełnego pipeline'u używaj
-> skryptów `01`–`04` z konsoli.
+> **Panel GUI** (`gui/main.py`) to okno desktopowe z interfejsem webowym w
+> stylu AdminLTE (Bootstrap 5). Pokazuje podgląd z kamery i rysuje ramki
+> wokół wykrytych twarzy, ale nie prowadzi jeszcze rozpoznawania osób ani
+> nie steruje zbieraniem danych — do pełnego pipeline'u używaj skryptów
+> `01`–`04` z konsoli. Gdy WebView2 nie działa, uruchom awaryjne GUI:
+> `python gui/tkinter_app.py`.
 
 Foldery `data/raw`, `data/processed`, `models` oraz `common/modele` są celowo
 puste w repozytorium (`.gitignore`) — zawierają dane osobowe (zdjęcia twarzy)
@@ -261,6 +268,25 @@ kamer z wyprzedzeniem, uruchom:
 
 ```powershell
 python listuj_kamery.py
+```
+
+### 5. Panel GUI (opcjonalnie)
+
+Panel to natywne okno systemowe z interfejsem webowym w stylu AdminLTE
+(Bootstrap 5). Uruchomienie:
+
+```powershell
+python gui/main.py
+```
+
+W oknie wybierasz kamerę, ustawiasz próg pewności i proporcję twarzy, a
+podgląd pokazuje ramki i liczbę wykrytych twarzy. Panel korzysta z
+`pywebview` i WebView2 (dołączony do Windows 10/11); pliki Bootstrapa leżą
+w repo, więc internet nie jest potrzebny. Serwer działa wyłącznie na
+`127.0.0.1`. Gdy WebView2 jest niedostępny, uruchom awaryjne GUI:
+
+```powershell
+python gui/tkinter_app.py
 ```
 
 ## Tutorial krok po kroku

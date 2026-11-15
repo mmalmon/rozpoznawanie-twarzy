@@ -25,5 +25,10 @@ torchvision>=0.21
 # dolaczony do instalatora python.org (opcja "tcl/tk and IDLE"). Nie dodawaj
 # tu linii "tkinter", bo pip zakonczy sie bledem "No matching distribution".
 
+# Panel GUI: okno desktopowe z interfejsem webowym (styl AdminLTE/Bootstrap).
+# pywebview korzysta na Windows z WebView2 (dolaczony do Windows 10/11).
+flask>=3.0
+pywebview>=5.0
+
 # Sterowanie gestem w 05_ekran_z_kawalami.py (po instalacji sprawdz, czy nadal masz opencv-python 4.x - mediapipe moze dociagnac opencv 5)
 mediapipe>=0.10
