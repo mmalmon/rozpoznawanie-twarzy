@@ -65,17 +65,51 @@ def parsuj_argumenty() -> argparse.Namespace:
 
 def main() -> None:
     argumenty = parsuj_argumenty()
+    if not 0 < argumenty.val_split < 1:
+        raise SystemExit(
+            "--val-split musi byc wiekszy od 0 i mniejszy od 1 "
+            f"(otrzymano {argumenty.val_split})."
+        )
+    if not FOLDER_SUROWYCH_DANYCH.exists():
+        raise SystemExit(
+            f"Brak folderu {FOLDER_SUROWYCH_DANYCH}. "
+            "Najpierw uruchom 01_zbieranie_danych.py dla kazdej osoby."
+        )
+
     # Ustawienie "ziarna" (seed) generatora liczb losowych sprawia, ze
     # losowy podzial danych bedzie zawsze taki sam przy tym samym ziarnie -
     # to wazne dla powtarzalnosci eksperymentow (np. porownywania wynikow
     # kilku uczniow miedzy soba).
     random.seed(argumenty.seed)
 
-    foldery_osob = [folder for folder in FOLDER_SUROWYCH_DANYCH.iterdir() if folder.is_dir()]
+    foldery_osob = sorted(
+        folder for folder in FOLDER_SUROWYCH_DANYCH.iterdir() if folder.is_dir()
+    )
     if not foldery_osob:
         raise SystemExit(
             f"Brak danych w {FOLDER_SUROWYCH_DANYCH}. "
             "Najpierw uruchom 01_zbieranie_danych.py dla kazdej osoby."
+        )
+
+    # Najpierw sprawdzamy, ktore osoby maja dosc zdjec. Osobe z jednym
+    # zdjeciem trzeba pominac: po podziale nie mialaby ani jednego zdjecia
+    # treningowego albo walidacyjnego, a torchvision.ImageFolder wymaga
+    # niepustych folderow klas.
+    osoby_do_podzialu: list[tuple[Path, list[Path]]] = []
+    for folder_osoby in foldery_osob:
+        zdjecia = sorted(folder_osoby.glob("*.jpg"))
+        if len(zdjecia) < 3:
+            print(
+                f"[uwaga] Osoba '{folder_osoby.name}' ma tylko {len(zdjecia)} "
+                "zdjec - pomijam (potrzeba min. 3, zalecane 100-150)."
+            )
+            continue
+        osoby_do_podzialu.append((folder_osoby, zdjecia))
+
+    if not osoby_do_podzialu:
+        raise SystemExit(
+            "Zadna osoba nie ma wystarczajacej liczby zdjec (min. 3). "
+            "Zbierz wiecej danych skryptem 01_zbieranie_danych.py."
         )
 
     # Czyscimy poprzedni podzial, zeby uniknac mieszania starych i nowych danych.
@@ -91,14 +125,7 @@ def main() -> None:
     (FOLDER_PRZETWORZONYCH_DANYCH / ".gitkeep").touch()
 
     podsumowanie = []
-    for folder_osoby in sorted(foldery_osob):
-        zdjecia = sorted(folder_osoby.glob("*.jpg"))
-        if len(zdjecia) < 10:
-            print(
-                f"[uwaga] Osoba '{folder_osoby.name}' ma tylko {len(zdjecia)} zdjec - "
-                "to bardzo malo, zalecane min. 100-150."
-            )
-
+    for folder_osoby, zdjecia in osoby_do_podzialu:
         # Losowo tasujemy kolejnosc zdjec przed podzialem, zeby zbior
         # walidacyjny nie skladal sie np. wylacznie z ostatnio zrobionych
         # zdjec (ktore moga byc do siebie bardzo podobne, jesli byly zrobione
@@ -107,8 +134,11 @@ def main() -> None:
         # int(...) obcina liczbe do czesci calkowitej (np. 0.2 * 157 = 31.4
         # -> 31 zdjec do walidacji). max(1, ...) gwarantuje, ze nawet przy
         # bardzo malej liczbie zdjec w zbiorze walidacyjnym znajdzie sie co
-        # najmniej jedno zdjecie.
-        liczba_walidacyjnych = max(1, int(len(zdjecia) * argumenty.val_split))
+        # najmniej jedno zdjecie. min(..., len-1) zostawia przynajmniej jedno
+        # zdjecie w zbiorze treningowym.
+        liczba_walidacyjnych = min(
+            max(1, int(len(zdjecia) * argumenty.val_split)), len(zdjecia) - 1
+        )
         # Wycinanie listy (tzw. "slicing"): [:N] bierze pierwsze N elementow,
         # [N:] bierze wszystkie POZOSTALE - dzieki temu kazde zdjecie trafia
         # albo do zbioru walidacyjnego, albo treningowego, nigdy do obu naraz.

@@ -21,6 +21,7 @@ Wskazowki dla dobrej jakosci danych (patrz tez README.md):
   - zbierz min. 150-300 zdjec na osobe,
   - rozne katy glowy (lekko w lewo/prawo/gore/dol), rozne wyrazy twarzy,
   - rozne oswietlenie (dzien/wieczor, swiatlo z roznych stron),
+  - rozne tla; pozniejsze kadrowanie ogranicza ich wplyw, ale ich nie zastepuje,
   - z okularami i bez, jesli osoba je czasem nosi,
   - staraj sie NIE zbierac serii identycznych, nieruchomych klatek - lepiej
     ruszac lekko glowa miedzy kolejnymi zdjeciami.
@@ -48,6 +49,7 @@ import cv2
 
 # Wlasny kod z folderu common/.
 from common.camera import dopasuj_do_ekranu, otworz_kamere, wybierz_kamere_interaktywnie
+from common.dane_osob import nastepny_numer_zdjecia, poprawna_nazwa
 from common.face_detector import DetektorTwarzy
 from common.imgio import zapisz_obraz
 
@@ -77,6 +79,16 @@ def parsuj_argumenty() -> argparse.Namespace:
 def main() -> None:
     argumenty = parsuj_argumenty()
 
+    if not poprawna_nazwa(argumenty.osoba):
+        raise SystemExit(
+            f"Niepoprawna nazwa osoby: {argumenty.osoba!r}. "
+            "Dozwolone sa litery, cyfry, podkreslenia i myslniki (np. jan_kowalski)."
+        )
+    if argumenty.cel <= 0:
+        raise SystemExit("--cel musi byc dodatnia liczba zdjec.")
+    if argumenty.szerokosc <= 0 or argumenty.wysokosc <= 0:
+        raise SystemExit("--szerokosc i --wysokosc musza byc dodatnie.")
+
     # mkdir(parents=True, exist_ok=True) tworzy folder danej osoby (razem z
     # ewentualnymi brakujacymi folderami nadrzednymi) - "exist_ok=True"
     # oznacza, ze NIE zglosi bledu, jesli folder juz istnieje (np. gdy
@@ -87,6 +99,14 @@ def main() -> None:
     # dowolna nazwa konczaca sie na ".jpg") w danym folderze - liczymy je,
     # zeby wiedziec, ile zdjec mamy juz zebranych z poprzednich uruchomien.
     liczba_juz_zebranych = len(list(folder_osoby.glob("*.jpg")))
+    nastepny_numer = nastepny_numer_zdjecia(folder_osoby, argumenty.osoba)
+    liczba_zapisanych = liczba_juz_zebranych
+
+    print(f"[info] Zapisuje do: {folder_osoby}")
+    print(f"[info] Juz zebranych zdjec: {liczba_juz_zebranych}. Cel: {argumenty.cel}.")
+    if liczba_juz_zebranych >= argumenty.cel:
+        print("[info] Cel jest juz osiagniety - nie ma potrzeby uruchamiac kamery.")
+        return
 
     indeks_kamery = (
         argumenty.kamera if argumenty.kamera is not None else wybierz_kamere_interaktywnie()
@@ -100,12 +120,9 @@ def main() -> None:
     nazwa_okna = "Zbieranie danych (q=koniec)"
     cv2.namedWindow(nazwa_okna, cv2.WINDOW_NORMAL)
 
-    liczba_zapisanych = liczba_juz_zebranych
     auto_zapis_wlaczony = False
     czas_ostatniego_auto_zapisu = 0.0
 
-    print(f"[info] Zapisuje do: {folder_osoby}")
-    print(f"[info] Juz zebranych zdjec: {liczba_juz_zebranych}. Cel: {argumenty.cel}.")
     print("[info] SPACJA=zapisz  a=auto-zapis  q/ESC=koniec")
 
     try:
@@ -182,11 +199,17 @@ def main() -> None:
                 wycinek = twarz.wytnij(klatka)
                 wycinek = cv2.resize(wycinek, DOCELOWY_ROZMIAR)
 
-                sciezka_pliku = folder_osoby / f"{argumenty.osoba}_{liczba_zapisanych:04d}.jpg"
-                zapisz_obraz(sciezka_pliku, wycinek)
-                liczba_zapisanych += 1
-                czas_ostatniego_auto_zapisu = time.time()
-                print(f"[zapisano] {sciezka_pliku.name} ({liczba_zapisanych}/{argumenty.cel})")
+                sciezka_pliku = folder_osoby / f"{argumenty.osoba}_{nastepny_numer:04d}.jpg"
+                if zapisz_obraz(sciezka_pliku, wycinek):
+                    nastepny_numer += 1
+                    liczba_zapisanych += 1
+                    czas_ostatniego_auto_zapisu = time.time()
+                    print(
+                        f"[zapisano] {sciezka_pliku.name} "
+                        f"({liczba_zapisanych}/{argumenty.cel})"
+                    )
+                else:
+                    print(f"[blad] Nie udalo sie zapisac {sciezka_pliku.name}")
 
             if liczba_zapisanych >= argumenty.cel:
                 print("[info] Osiagnieto docelowa liczbe zdjec.")

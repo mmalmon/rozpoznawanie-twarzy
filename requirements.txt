@@ -19,3 +19,11 @@ tqdm>=4.66
 # Wersje CPU-only (dzialaja wszedzie, ale bez przyspieszenia GPU):
 torch>=2.6
 torchvision>=0.21
+
+# GUI (gui/main.py) korzysta z tkinter, ktory jest CZESCIA STANDARDOWEJ
+# biblioteki Pythona - NIE instaluje sie go przez pip. Na Windows jest
+# dolaczony do instalatora python.org (opcja "tcl/tk and IDLE"). Nie dodawaj
+# tu linii "tkinter", bo pip zakonczy sie bledem "No matching distribution".
+
+# Sterowanie gestem w 05_ekran_z_kawalami.py (po instalacji sprawdz, czy nadal masz opencv-python 4.x - mediapipe moze dociagnac opencv 5)
+mediapipe>=0.10

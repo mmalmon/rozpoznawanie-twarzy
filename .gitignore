@@ -6,6 +6,9 @@ data/processed/*
 models/*
 !models/.gitkeep
 
+# Modele sieci (duze pliki binarne) - pobierane osobno, patrz README
+common/modele/
+
 # Python
 __pycache__/
 *.pyc

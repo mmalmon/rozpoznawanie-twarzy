@@ -60,6 +60,8 @@ from dataclasses import dataclass
 # projektu - obsluguje kamere, przetwarzanie obrazu i (w common/face_detector.py)
 # detekcje twarzy.
 import cv2
+# numpy - typ tablicy obrazu uzywany w adnotacjach typu funkcji pomocniczych.
+import numpy as np
 
 # Docelowa rozdzielczosc probna uzywana przy wykrywaniu mozliwosci kamery -
 # jesli kamera potrafi jej dostarczyc, prawdopodobnie jest to prawdziwa
@@ -169,27 +171,36 @@ def wykryj_dostepne_kamery(maks_indeks: int = 5) -> list[WykrytaKamera]:
             kamera.release()
             continue
 
-        # kamera.set(...) prosi kamere o zmiane jej ustawien. Zwraca True/False,
-        # ale NIE gwarantuje, ze zadanie zostalo spelnione w 100% - dlatego
-        # kilka linijek nizej odczytujemy, co faktycznie zostalo ustawione.
-        kamera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        kamera.set(cv2.CAP_PROP_FRAME_WIDTH, PROBNA_SZEROKOSC_4K)
-        kamera.set(cv2.CAP_PROP_FRAME_HEIGHT, PROBNA_WYSOKOSC_4K)
+        try:
+            # kamera.set(...) prosi kamere o zmiane jej ustawien. Zwraca True/False,
+            # ale NIE gwarantuje, ze zadanie zostalo spelnione w 100% - dlatego
+            # kilka linijek nizej odczytujemy, co faktycznie zostalo ustawione.
+            kamera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            kamera.set(cv2.CAP_PROP_FRAME_WIDTH, PROBNA_SZEROKOSC_4K)
+            kamera.set(cv2.CAP_PROP_FRAME_HEIGHT, PROBNA_WYSOKOSC_4K)
+            kamera.set(cv2.CAP_PROP_FPS, 30)
 
-        # kamera.read() pobiera jedna klatke obrazu. Pierwsza wartosc zwrocona
-        # (tutaj: udalo_sie_odczytac) mowi, czy odczyt sie powiodl - druga
-        # wartosc to sama klatka (obraz), ktorej tutaj nie potrzebujemy,
-        # wiec zapisujemy ja do zmiennej "_" (konwencja Pythona oznaczajaca
-        # "ta wartosc celowo ignorujemy").
-        udalo_sie_odczytac, _ = kamera.read()
-        # kamera.get(...) odczytuje AKTUALNA wartosc danego ustawienia -
-        # czyli to, co kamera naprawde przyznala, a nie to, o co prosilismy.
-        szerokosc = int(kamera.get(cv2.CAP_PROP_FRAME_WIDTH))
-        wysokosc = int(kamera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        # release() zwalnia dostep do kamery - bardzo wazne, zeby inne
-        # aplikacje (albo kolejne uruchomienie tej petli) mogly z niej
-        # korzystac. Bez tego kamera "zawiesilaby sie" jako zajeta.
-        kamera.release()
+            # kamera.read() pobiera jedna klatke obrazu. Pierwsza wartosc zwrocona
+            # (tutaj: udalo_sie_odczytac) mowi, czy odczyt sie powiodl - druga
+            # wartosc to sama klatka (obraz), ktorej tutaj nie potrzebujemy,
+            # wiec zapisujemy ja do zmiennej "_" (konwencja Pythona oznaczajaca
+            # "ta wartosc celowo ignorujemy"). Niektore kamery potrzebuja kilku
+            # prob, zanim po zmianie trybu zwroca prawidlowa klatke.
+            udalo_sie_odczytac = False
+            for _ in range(3):
+                udalo_sie_odczytac, _ = kamera.read()
+                if udalo_sie_odczytac:
+                    break
+
+            # kamera.get(...) odczytuje AKTUALNA wartosc danego ustawienia -
+            # czyli to, co kamera naprawde przyznala, a nie to, o co prosilismy.
+            szerokosc = int(kamera.get(cv2.CAP_PROP_FRAME_WIDTH))
+            wysokosc = int(kamera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        finally:
+            # release() zwalnia dostep do kamery - bardzo wazne, zeby inne
+            # aplikacje (albo kolejne uruchomienie tej petli) mogly z niej
+            # korzystac. Bez tego kamera "zawiesilaby sie" jako zajeta.
+            kamera.release()
 
         if udalo_sie_odczytac:
             znalezione_kamery.append(WykrytaKamera(indeks, szerokosc, wysokosc))
@@ -241,10 +252,20 @@ def wybierz_kamere_interaktywnie(maks_indeks: int = 5) -> int:
     # szybkie, niezaleznie od tego, ile jest kamer.
     poprawne_indeksy = {kamera.indeks for kamera in kamery}
     while True:
-        # input() wstrzymuje program i czeka, az uczen wpisze cos w konsoli
-        # i nacisnie Enter. .strip() usuwa przypadkowe spacje/entery na
-        # poczatku i koncu wpisanego tekstu.
-        wybor = input(f"\nWybierz numer kamery ({sorted(poprawne_indeksy)}): ").strip()
+        try:
+            # input() wstrzymuje program i czeka, az uczen wpisze cos w konsoli
+            # i nacisnie Enter. .strip() usuwa przypadkowe spacje/entery na
+            # poczatku i koncu wpisanego tekstu.
+            wybor = input(f"\nWybierz numer kamery ({sorted(poprawne_indeksy)}): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            # Program uruchomiony bez interaktywnego terminala (np. z GUI
+            # albo z pliku .bat) nie moze zapytac o wybor - bierzemy pierwsza
+            # wykryta kamere, zeby nie konczyc sie bledem.
+            print(
+                f"\n[kamera] Brak interaktywnego terminala - wybieram kamere "
+                f"{kamery[0].indeks}."
+            )
+            return kamery[0].indeks
         # isdigit() sprawdza, czy tekst sklada sie WYLACZNIE z cyfr - dzieki
         # temu unikamy bledu, gdyby uczen wpisal np. litery zamiast liczby.
         if wybor.isdigit() and int(wybor) in poprawne_indeksy:
@@ -254,20 +275,21 @@ def wybierz_kamere_interaktywnie(maks_indeks: int = 5) -> int:
 
 def otworz_kamere(
     indeks: int = 0,
-    szerokosc: int = 1920,
-    wysokosc: int = 1080,
+    szerokosc: int = 3840,
+    wysokosc: int = 2160,
     fps: int = 30,
 ) -> cv2.VideoCapture:
     """Otwiera kamere o danym indeksie w zadanej rozdzielczosci i zwraca
     obiekt cv2.VideoCapture gotowy do odczytu kolejnych klatek metoda .read().
 
-    DLA UCZNIOW: domyslnie uzywamy 1920x1080 (Full HD), a nie pelnego 4K
-    (3840x2160) - do detekcji i rozpoznawania twarzy pelna rozdzielczosc
-    kamery nie jest potrzebna, a mniejsze klatki oznaczaja wyzsze FPS i
-    mniejsze obciazenie procesora/karty graficznej. Jesli chcecie zrobic
-    bardzo ostre zdjecia treningowe w pelnym 4K, podajcie
-    szerokosc=3840, wysokosc=2160.
+    Domyslnie zadajemy pelne 4K (3840x2160), zgodne z kamera RoWave RC16.
+    Jesli wybrana kamera nie obsluguje tego trybu, sterownik moze wybrac
+    nizsza rozdzielczosc; rzeczywisty rozmiar odebranej klatki jest
+    sprawdzany i raportowany ponizej.
     """
+    if szerokosc <= 0 or wysokosc <= 0 or fps <= 0:
+        raise ValueError("Szerokosc, wysokosc i FPS kamery musza byc dodatnie.")
+
     # CAP_DSHOW jest wymagany na Windows, aby poprawnie ustawic FOURCC/rozdzielczosc
     # dla kamer UVC - domyslny backend MSMF czasem ignoruje te ustawienia.
     kamera = cv2.VideoCapture(indeks, cv2.CAP_DSHOW)
@@ -279,6 +301,8 @@ def otworz_kamere(
             "uzywana przez inna aplikacje (np. Kamera Windows, Teams, Zoom)."
         )
 
+    # Kolejnosc ma znaczenie: najpierw FOURCC (kompresja), potem rozdzielczosc,
+    # a na koncu FPS. Niektore sterowniki resetuja FPS po zmianie rozdzielczosci.
     kamera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     # cv2.VideoWriter_fourcc(*"MJPG") zamienia napis "MJPG" na specjalny
     # 4-bajtowy kod liczbowy (FOURCC), ktorego oczekuje kamera/sterownik -
@@ -287,21 +311,47 @@ def otworz_kamere(
     kamera.set(cv2.CAP_PROP_FRAME_WIDTH, szerokosc)
     kamera.set(cv2.CAP_PROP_FRAME_HEIGHT, wysokosc)
     kamera.set(cv2.CAP_PROP_FPS, fps)
+    # Mniejsza kolejka klatek = mniejsze opoznienie podgladu (jesli backend
+    # to obsluguje; na czesci sterownikow ustawienie jest ignorowane).
+    kamera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    # Kamera moze zignorowac nasze zadanie i ustawic np. najblizsza obslugiwana
-    # rozdzielczosc - dlatego odczytujemy, co faktycznie zostalo ustawione.
+    # Odczytujemy kilka klatek po zmianie trybu; wymiary klatki sa
+    # wiarygodniejszym potwierdzeniem niz sama odpowiedz CAP_PROP.
+    # Niektore kamery zwracaja pierwsza klatke dopiero po chwili, dlatego
+    # probujemy kilkukrotnie, zanim uznamy, ze odczyt naprawde nie dziala.
+    ostatnia_klatka = None
+    for _ in range(5):
+        czy_odczytano, klatka = kamera.read()
+        if czy_odczytano and klatka is not None:
+            ostatnia_klatka = klatka
+    if ostatnia_klatka is None:
+        kamera.release()
+        raise RuntimeError(
+            f"Nie udalo sie odczytac obrazu z kamery o indeksie {indeks} "
+            "po ustawieniu rozdzielczosci."
+        )
+
     rzeczywista_szerokosc = int(kamera.get(cv2.CAP_PROP_FRAME_WIDTH))
     rzeczywista_wysokosc = int(kamera.get(cv2.CAP_PROP_FRAME_HEIGHT))
     rzeczywiste_fps = kamera.get(cv2.CAP_PROP_FPS)
+    szerokosc_klatki = ostatnia_klatka.shape[1]
+    wysokosc_klatki = ostatnia_klatka.shape[0]
     print(
-        f"[kamera] Kamera otwarta: {rzeczywista_szerokosc}x{rzeczywista_wysokosc} "
+        f"[kamera] Strumien: {szerokosc_klatki}x{wysokosc_klatki}; sterownik: "
+        f"{rzeczywista_szerokosc}x{rzeczywista_wysokosc} "
         f"@ {rzeczywiste_fps:.1f} FPS (zadano {szerokosc}x{wysokosc} @ {fps} FPS)"
     )
+    if (szerokosc_klatki, wysokosc_klatki) != (szerokosc, wysokosc):
+        print(
+            f"[uwaga] Kamera nie udostepnila zadanego trybu {szerokosc}x{wysokosc}; "
+            f"strumien ma {szerokosc_klatki}x{wysokosc_klatki}. Sprawdz indeks kamery, "
+            "polaczenie USB 3.0, tryb MJPG i aplikacje zajmujace kamere."
+        )
 
     return kamera
 
 
-def dopasuj_do_ekranu(klatka, margines: float = 0.9):
+def dopasuj_do_ekranu(klatka: np.ndarray, margines: float = 0.9) -> np.ndarray:
     """Skaluje klatke (JUZ z narysowanymi ramkami/napisami) w dol tak, aby
     zmiescila sie na ekranie uzytkownika - ale TYLKO do wyswietlenia w oknie
     podgladu (cv2.imshow). Nigdy nie powieksza obrazu, wiec na duzych
@@ -358,4 +408,3 @@ def dopasuj_do_ekranu(klatka, margines: float = 0.9):
     return cv2.resize(
         klatka, (nowa_szerokosc, nowa_wysokosc), interpolation=cv2.INTER_AREA
     )
-

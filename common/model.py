@@ -29,8 +29,8 @@ UWAGA - DWA PODEJSCIA W TYM MODULE:
     rozszerzenie w README.md), ale skrypty 03/04 juz go NIE uzywaja.
   - zbuduj_ekstraktor_cech() + oblicz_znormalizowane_cechy() to aktualne
     podejscie uzywane w skryptach 03/04 - rozpoznawanie przez PODOBIENSTWO
-    (embeddingi + prog kosinusowy), odporne na "uczenie sie skrotow"
-    miedzy domenami zdjec. Szczegoly - patrz komentarz przy
+    (embeddingi + prog kosinusowy), ktore ogranicza ryzyko "uczenia sie
+    skrotow", ale nie eliminuje wplywu tla. Szczegoly - patrz komentarz przy
     zbuduj_ekstraktor_cech() ponizej oraz naglowek 03_trenowanie_modelu.py.
 """
 
@@ -54,12 +54,14 @@ from torch.nn import functional as F
 # architekturami sieci neuronowych do przetwarzania obrazu (w tym
 # MobileNetV3-Small uzywana w tym projekcie), czesto razem z wagami
 # wytrenowanymi wczesniej na zbiorze ImageNet.
-from torchvision import models
+from torchvision import models, transforms
 
 # Standardowy rozmiar wejscia (szerokosc x wysokosc w pikselach) dla sieci
 # trenowanych na zbiorze ImageNet - kazdy obraz musi zostac przeskalowany
 # do tego rozmiaru, zanim trafi do sieci.
 ROZMIAR_OBRAZU = 224
+SKALA_KADRU_TWARZY = 0.82
+WERSJA_PRZYGOTOWANIA_OBRAZU = 3
 
 # Srednia i odchylenie standardowe jasnosci kanalow R, G, B, wyliczone na
 # calym zbiorze ImageNet podczas oryginalnego treningu. Musimy znormalizowac
@@ -68,6 +70,33 @@ ROZMIAR_OBRAZU = 224
 # zaburzylyby jej dzialanie.
 SREDNIA_IMAGENET = [0.485, 0.456, 0.406]
 ODCHYLENIE_IMAGENET = [0.229, 0.224, 0.225]
+
+
+def przygotuj_przeksztalcenie(
+    wejscie_z_kamery: bool = False,
+    skala_kadru: float = SKALA_KADRU_TWARZY,
+) -> transforms.Compose:
+    """Przygotowuje obraz twarzy do ekstrakcji cech.
+
+    Centralne kadrowanie ogranicza wplyw tla, zachowujac ten sam sposob
+    przygotowania zdjec treningowych i klatek z kamery.
+    """
+    if not 0 < skala_kadru <= 1:
+        raise ValueError("skala_kadru musi byc wieksza od 0 i nie wieksza od 1.")
+
+    kroki = []
+    if wejscie_z_kamery:
+        kroki.append(transforms.ToPILImage())
+    kroki.extend(
+        [
+            transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
+            transforms.CenterCrop(int(ROZMIAR_OBRAZU * skala_kadru)),
+            transforms.Resize((ROZMIAR_OBRAZU, ROZMIAR_OBRAZU)),
+            transforms.ToTensor(),
+            transforms.Normalize(SREDNIA_IMAGENET, ODCHYLENIE_IMAGENET),
+        ]
+    )
+    return transforms.Compose(kroki)
 
 
 def zbuduj_model(
@@ -152,19 +181,18 @@ def zbuduj_ekstraktor_cech() -> nn.Module:
     (embeddingu) kazdego zdjecia twarzy - wektora kilkuset liczb opisujacego
     jego wyglad. Nastepnie:
       1. Dla znanej osoby liczymy embeddingi WSZYSTKICH jej zdjec
-         treningowych i usredniamy je -> "wzorzec" (centroid) tej osoby.
+         treningowych i zachowujemy je jako wiele "prototypow" (wzorców)
+         tej osoby - po jednym na zdjecie/poze/oswietlenie.
       2. Podczas rozpoznawania na zywo liczymy embedding nowej twarzy i
          sprawdzamy, jak bardzo jest PODOBNY (podobienstwo kosinusowe) do
-         wzorca kazdej znanej osoby.
+         NAJBLIZSZEGO prototypu kazdej znanej osoby.
       3. Jesli podobienstwo przekracza ustalony (skalibrowany) prog - to ta
          osoba. Jesli nie - "Nieznana osoba".
 
-    Kluczowa zaleta: NIGDY nie trenujemy zadnej warstwy na parze
-    (moja twarz vs internetowe zdjecia), wiec nie ma jak "nauczyc sie na
-    skrotow" tej konkretnej, mylacej roznicy w stylu zdjec - embedding
-    opiera sie wylacznie na ogolnej wiedzy sieci o tym, jak wygladaja
-    obrazy (w tym twarze), wyniesionej z treningu na milionach zdjec
-    ImageNet.
+    Nie trenujemy warstwy na parze (moja twarz vs internetowe zdjecia), co
+    ogranicza ryzyko nauczenia sie roznic stylu z takiego zbioru. Nie usuwa
+    to wplywu tla: MobileNet jest modelem ogolnym, dlatego stosujemy wspolne
+    centralne kadrowanie i nadal potrzebujemy zdjec z roznych tla.
     """
     wagi = models.MobileNet_V3_Small_Weights.DEFAULT
     model = models.mobilenet_v3_small(weights=wagi)
@@ -203,6 +231,25 @@ def oblicz_znormalizowane_cechy(ekstraktor: nn.Module, tensor_wsadowy: torch.Ten
         # nie trenujemy tego modelu, wiec gradienty sa zbedne.
         cechy = ekstraktor(tensor_wsadowy)
     return F.normalize(cechy, p=2, dim=1)
+
+
+def policz_podobienstwa_wzorca(
+    embeddingi: torch.Tensor, wzorzec: torch.Tensor
+) -> torch.Tensor:
+    """Zwraca podobienstwo do centroidu albo najlepszego przykladowego embeddingu.
+
+    `embeddingi` moze byc pojedynczym wektorem [wymiar] albo macierza
+    [liczba_zdjec, wymiar]. `wzorzec` rowniez moze byc pojedynczym wektorem
+    (centroid) albo macierza prototypow [liczba_prototypow, wymiar].
+    Gdy prototypow jest wiele, dla kazdego zdjecia bierzemy MAKSYMALNE
+    podobienstwo - czyli dopasowanie do najbardziej podobnego zdjecia danej
+    osoby, a nie do jej "przecietnej" twarzy.
+    """
+    if embeddingi.ndim == 1:
+        embeddingi = embeddingi.unsqueeze(0)
+    if wzorzec.ndim == 1:
+        return embeddingi @ wzorzec
+    return (embeddingi @ wzorzec.T).max(dim=1).values
 
 
 def pobierz_urzadzenie() -> torch.device:

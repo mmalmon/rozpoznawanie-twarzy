@@ -56,6 +56,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from common.dane_osob import nastepny_numer_zdjecia, poprawna_nazwa
 from common.face_detector import DetektorTwarzy
 from common.imgio import zapisz_obraz
 
@@ -121,15 +122,36 @@ def pobierz_jedno_zdjecie(url: str) -> np.ndarray | None:
     # plik JPEG) na tablice liczb typu uint8 - to samo, co np.fromfile w
     # common/imgio.py, tylko zrodlem danych jest tu pamiec, a nie dysk.
     dane = np.frombuffer(surowe_bajty, dtype=np.uint8)
-    return cv2.imdecode(dane, cv2.IMREAD_COLOR)
+    obraz = cv2.imdecode(dane, cv2.IMREAD_COLOR)
+    if obraz is None:
+        print(f"[uwaga] Serwer zwrocil dane, ktorych nie da sie odczytac jako obraz ({url}).")
+    return obraz
 
 
 def main() -> None:
     argumenty = parsuj_argumenty()
 
+    if not poprawna_nazwa(argumenty.nazwa_klasy):
+        raise SystemExit(
+            f"Niepoprawna nazwa klasy: {argumenty.nazwa_klasy!r}. "
+            "Dozwolone sa litery, cyfry, podkreslenia i myslniki."
+        )
+    if argumenty.cel <= 0:
+        raise SystemExit("--cel musi byc dodatnia liczba zdjec.")
+    if argumenty.opoznienie < 0:
+        raise SystemExit("--opoznienie nie moze byc ujemne.")
+
     folder_docelowy = FOLDER_DANYCH / argumenty.nazwa_klasy
     folder_docelowy.mkdir(parents=True, exist_ok=True)
     liczba_juz_zebranych = len(list(folder_docelowy.glob("*.jpg")))
+    nastepny_numer = nastepny_numer_zdjecia(folder_docelowy, argumenty.nazwa_klasy)
+
+    print(f"[info] Zapisuje do: {folder_docelowy}")
+    print(f"[info] Juz zebranych zdjec: {liczba_juz_zebranych}. Cel: {argumenty.cel}.")
+    print("[info] Zrodlo: randomuser.me (gotowe portrety udostepnione do celow testowych)")
+    if liczba_juz_zebranych >= argumenty.cel:
+        print("[info] Cel jest juz osiagniety - nic nie pobieram.")
+        return
 
     detektor = DetektorTwarzy()
 
@@ -138,10 +160,6 @@ def main() -> None:
     # pierwszych w kolejnosci "men/0, men/1, men/2...").
     adresy = ADRESY_PORTRETOW.copy()
     random.shuffle(adresy)
-
-    print(f"[info] Zapisuje do: {folder_docelowy}")
-    print(f"[info] Juz zebranych zdjec: {liczba_juz_zebranych}. Cel: {argumenty.cel}.")
-    print("[info] Zrodlo: randomuser.me (gotowe portrety udostepnione do celow testowych)")
 
     liczba_zapisanych = liczba_juz_zebranych
     # enumerate(adresy, start=1) daje nam zarowno kolejny adres, jak i
@@ -170,10 +188,13 @@ def main() -> None:
         wycinek = twarz.wytnij(obraz_do_detekcji, margines=0.2)
         wycinek = cv2.resize(wycinek, DOCELOWY_ROZMIAR)
 
-        sciezka_pliku = folder_docelowy / f"{argumenty.nazwa_klasy}_{liczba_zapisanych:04d}.jpg"
-        zapisz_obraz(sciezka_pliku, wycinek)
-        liczba_zapisanych += 1
-        print(f"[zapisano] {sciezka_pliku.name} ({liczba_zapisanych}/{argumenty.cel})")
+        sciezka_pliku = folder_docelowy / f"{argumenty.nazwa_klasy}_{nastepny_numer:04d}.jpg"
+        if zapisz_obraz(sciezka_pliku, wycinek):
+            nastepny_numer += 1
+            liczba_zapisanych += 1
+            print(f"[zapisano] {sciezka_pliku.name} ({liczba_zapisanych}/{argumenty.cel})")
+        else:
+            print(f"[blad] Nie udalo sie zapisac {sciezka_pliku.name}")
 
         # Krotka przerwa miedzy zadaniami - dobra praktyka przy korzystaniu
         # z darmowych, publicznych serwisow internetowych.

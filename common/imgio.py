@@ -36,6 +36,9 @@ def zapisz_obraz(sciezka: str | Path, obraz: np.ndarray) -> bool:
     sciezkami zawierajacymi polskie znaki. Zwraca True, jesli zapis sie
     powiodl."""
     sciezka = Path(sciezka)
+    # Na wszelki wypadek tworzymy folder docelowy - zapis ma dzialac nawet
+    # przy pierwszym zdjeciu w nowym folderze osoby.
+    sciezka.parent.mkdir(parents=True, exist_ok=True)
     # cv2.imencode koduje obraz (tablice numpy) do formatu pliku (np. .jpg)
     # w PAMIECI, bez zapisywania niczego na dysk - zwraca dwie wartosci:
     # flage powodzenia oraz same zakodowane bajty obrazu.
