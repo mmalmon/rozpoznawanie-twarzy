@@ -136,11 +136,14 @@ rozpoznawanie twarzy/
 │   ├── imgio.py                 # zapis/odczyt zdjęć odporny na polskie znaki w ścieżce
 │   ├── modele/                  # modele ONNX/task (YuNet, FER+, MediaPipe Pose; poza Git)
 │   ├── model.py                 # definicja modelu (ekstraktor cech / embeddingi)
+│   ├── rozpoznawanie.py         # wspólna logika: wzorce, dopasowanie, emocje (04 + GUI)
 │   └── uruchom_w_venv.py        # restart skryptu w środowisku .venv
 ├── gui/
 │   ├── main.py                  # panel desktopowy: pywebview + Flask + Bootstrap (styl AdminLTE)
 │   ├── server.py                # lokalne API i strumień MJPEG (tylko 127.0.0.1)
-│   ├── camera_stream.py         # wątek kamery, detekcja i klatki JPEG
+│   ├── camera_stream.py         # wątek kamery: detekcja, rozpoznawanie i zbieranie zdjęć
+│   ├── rozpoznawanie.py         # silnik modelu dla panelu (wczytywanie, przeładowanie wzorców)
+│   ├── trening.py               # uruchamianie 02 + 03 z paskiem postępu i logiem
 │   ├── tkinter_app.py           # awaryjne GUI w Tkinterze
 │   ├── templates/index.html     # widok panelu
 │   ├── static/                  # Bootstrap 5 (lokalnie), własny CSS i JS
@@ -159,11 +162,12 @@ rozpoznawanie twarzy/
 └── README.md
 ```
 
-> **Panel GUI** (`gui/main.py`) to okno desktopowe z interfejsem webowym w
-> stylu AdminLTE (Bootstrap 5). Pokazuje podgląd z kamery i rysuje ramki
-> wokół wykrytych twarzy, ale nie prowadzi jeszcze rozpoznawania osób ani
-> nie steruje zbieraniem danych — do pełnego pipeline'u używaj skryptów
-> `01`–`04` z konsoli. Gdy WebView2 nie działa, uruchom awaryjne GUI:
+> **Panel GUI** (`gui/main.py`) prowadzi cały proces bez konsoli: zbieranie
+> zdjęć do `data/raw`, trening z paskiem postępu (te same skrypty `02` i
+> `03`), rozpoznawanie wyuczonych osób na żywo, opcjonalne emocje oraz
+> przeglądanie i usuwanie bazy twarzy. Skrypty `01`–`04` nadal działają i
+> uczą dokładnie tego samego pipeline'u — panel jest wygodnym skrótem, a nie
+> osobną implementacją. Gdy WebView2 nie działa, uruchom awaryjne GUI:
 > `python gui/tkinter_app.py`.
 
 Foldery `data/raw`, `data/processed`, `models` oraz `common/modele` są celowo
@@ -270,7 +274,7 @@ kamer z wyprzedzeniem, uruchom:
 python listuj_kamery.py
 ```
 
-### 5. Panel GUI (opcjonalnie)
+### 5. Panel GUI (opcjonalnie, ale wygodnie)
 
 Panel to natywne okno systemowe z interfejsem webowym w stylu AdminLTE
 (Bootstrap 5). Uruchomienie:
@@ -278,6 +282,24 @@ Panel to natywne okno systemowe z interfejsem webowym w stylu AdminLTE
 ```powershell
 python gui/main.py
 ```
+
+Panel prowadzi cały proces:
+
+- **Detekcja na żywo** — ramki wokół twarzy, próg pewności, minimalna
+  proporcja, FPS i liczba twarzy.
+- **Rozpoznawanie** — po wczytaniu `models/wzorce_osob.json` pokazuje imię
+  i podobieństwo; model wczytuje się w tle, a po treningu przeładowuje się
+  bez restartu panelu. Suwak „korekta progu” działa jak `--korekta-progu`
+  w `04_rozpoznawanie_na_zywo.py`.
+- **Dodaj twarz** — wpisujesz nazwę osoby i cel (np. 300 zdjęć), a panel
+  zapisuje wycięte twarze 224×224 do `data/raw/<osoba>/` co ok. 0,3 s —
+  dokładnie tak jak `01_zbieranie_danych.py` w trybie automatycznym.
+- **Trening** — uruchamia `02_podzial_danych.py`, a potem
+  `03_trenowanie_modelu.py --postep` w osobnym procesie; czyta maszynowe
+  linie postępu (`[postep-start]`, `[postep]`), pokazuje pasek, etap i log.
+  Trening można przerwać przyciskiem „Przerwij”.
+- **Baza twarzy** — miniatury, liczba zdjęć i usuwanie osoby (opcjonalnie z
+  ponownym treningiem). Usunięcie ostatniej osoby czyści wzorce.
 
 W oknie wybierasz kamerę, ustawiasz próg pewności i proporcję twarzy, a
 podgląd pokazuje ramki i liczbę wykrytych twarzy. Panel korzysta z
@@ -289,7 +311,16 @@ w repo, więc internet nie jest potrzebny. Serwer działa wyłącznie na
 python gui/tkinter_app.py
 ```
 
+Emocje są w panelu **domyślnie wyłączone** — włączasz je przełącznikiem w
+zakładce Rozpoznawanie. W szkole ich nie używaj (AI Act, art. 5 ust. 1
+lit. f); patrz uwagi o prywatności wyżej.
+
 ## Tutorial krok po kroku
+
+> Ten sam proces możesz przejść w panelu **Dodaj twarz → Trening →
+> Rozpoznawanie** (patrz sekcja [Panel GUI](#5-panel-gui-opcjonalnie-ale-wygodnie)).
+> Poniższe kroki pokazują, co dokładnie dzieje się pod spodem — warto je
+> przejść przynajmniej raz z konsoli, żeby zobaczyć surowe komunikaty.
 
 ### Krok 0 — szybki test detekcji (bez rozpoznawania)
 
@@ -369,6 +400,10 @@ Skrypt:
 
 Po zmianie sposobu kadrowania trzeba ponownie uruchomić ten krok — starsze
 wzorce są celowo odrzucane, ponieważ nie pasują do nowych embeddingów.
+
+Opcja `--postep` wypisuje maszynowe linie `[postep-start] <faza> <total>` i
+`[postep] <faza> <zrobione>` zamiast zwykłego postępu w konsoli. Używa jej
+panel GUI, żeby przesuwać pasek treningu; ręcznie zwykle nie jest potrzebna.
 
 Ten krok trwa sekundy do (przy bardzo dużych zbiorach) kilkudziesięciu
 sekund — w odróżnieniu od poprzedniego podejścia (klasyfikacja) nie ma tu
@@ -450,7 +485,8 @@ rozdzielczość podglądu, np. `--szerokosc 1280 --wysokosc 720`.
 Zbierz więcej i bardziej zróżnicowanych danych treningowych (patrz sekcja
 wyżej — różne kąty głowy, oświetlenie), uruchom ponownie krok 3 (kalibracja
 progu jest automatyczna) albo obniż próg ręcznie przy starcie kroku 4:
-`python 04_rozpoznawanie_na_zywo.py --korekta-progu -0.05`.
+`python 04_rozpoznawanie_na_zywo.py --korekta-progu -0.05` (w panelu GUI
+służy do tego suwak **Korekta progu** w zakładce Rozpoznawanie).
 
 **Model rozpoznaje jako znaną osobę kogoś zupełnie innego (albo nawet
 fragment czoła/dłoni).** To był częsty problem poprzedniej wersji projektu

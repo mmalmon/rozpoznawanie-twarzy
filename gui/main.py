@@ -48,6 +48,7 @@ except ImportError as blad:  # pragma: no cover - zależne od środowiska
     ) from blad
 
 from gui.camera_stream import StrumienKamery
+from gui.rozpoznawanie import SilnikRozpoznawania
 from gui.server import utworz_aplikacje
 
 SZEROKOSC_OKNA = 1280
@@ -76,12 +77,14 @@ def _czekaj_na_serwer(adres: str, limit: float = 10.0) -> None:
 
 
 def main() -> None:
-    strumien = StrumienKamery()
+    silnik = SilnikRozpoznawania()
+    strumien = StrumienKamery(silnik)
     # Skanowanie kamer trwa kilka sekund - robimy je od razu w tle,
     # żeby panel po otwarciu miał już gotową listę.
     strumien.odswiez_kamery_w_tle()
 
-    aplikacja = utworz_aplikacje(strumien)
+    aplikacja = utworz_aplikacje(strumien, silnik)
+    menedzer = getattr(aplikacja, "menedzer_treningu", None)
     port = _wolny_port()
     serwer = make_server("127.0.0.1", port, aplikacja, threaded=True)
     watek_serwera = threading.Thread(
@@ -113,6 +116,8 @@ def main() -> None:
             return
         posprzatane = True
         strumien.stop()
+        if menedzer is not None:
+            menedzer.zatrzymaj()
         serwer.shutdown()
 
     okno.events.closed += _posprzataj

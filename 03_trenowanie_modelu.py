@@ -106,6 +106,21 @@ NAZWA_KLASY_NIEZNAJOMY = "nieznajomy"
 WSPOLCZYNNIKI_JASNOSCI = (0.65, 1.0, 1.4)
 MAKS_WZORCOW_NA_JASNOSC = 128
 MAKS_PROG_PODOBIENSTWA = 0.87
+ROZSZERZENIA_OBRAZOW = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def policz_obrazy(folder: Path) -> int:
+    """Szybko liczy pliki-obrazki w folderze (bez wczytywania ich do pamieci).
+
+    Potrzebne tylko do paska postepu: zanim zaczniemy liczyc embeddingi,
+    chcemy znać mianownik ("ile z ilu zdjec"), zeby GUI pokazalo realny
+    procent, a nie pusty pasek.
+    """
+    return sum(
+        1
+        for plik in folder.rglob("*")
+        if plik.is_file() and plik.suffix.lower() in ROZSZERZENIA_OBRAZOW
+    )
 
 
 def parsuj_argumenty() -> argparse.Namespace:
@@ -124,7 +139,45 @@ def parsuj_argumenty() -> argparse.Namespace:
             "warunkach oswietlenia)"
         ),
     )
+    parser.add_argument(
+        "--postep",
+        action="store_true",
+        help=(
+            "wypisuje maszynowe linie postepu dla panelu GUI: "
+            "'[postep-start] <faza> <total>' i '[postep] <faza> <zrobione>'. "
+            "Bez tej opcji konsola wyglada jak dotychczas."
+        ),
+    )
     return parser.parse_args()
+
+
+class Postep:
+    """Licznik postepu wysylany do panelu GUI (opcjonalny, przez --postep).
+
+    Format linii jest celowo prosty, zeby GUI moglo go parsowac bez
+    zgadywania: "ile z ilu" w danej fazie. Kazda linia jest wypisywana od
+    razu (flush=True), bo inaczej Python buforowalby ja w potoku i pasek
+    postepu w panelu stalby w miejscu.
+    """
+
+    def __init__(self, wlaczony: bool) -> None:
+        self.wlaczony = wlaczony
+        self.faza = "embeddingi"
+        self.zrobione = 0
+        self.total = 0
+
+    def start(self, faza: str, total: int) -> None:
+        self.faza = faza
+        self.zrobione = 0
+        self.total = max(0, total)
+        if self.wlaczony:
+            print(f"[postep-start] {faza} {self.total}", flush=True)
+
+    def dodaj(self, ile: int) -> None:
+        if not self.wlaczony:
+            return
+        self.zrobione += ile
+        print(f"[postep] {self.faza} {self.zrobione}", flush=True)
 
 
 def policz_embeddingi(
@@ -132,6 +185,7 @@ def policz_embeddingi(
     folder: Path,
     urzadzenie: torch.device,
     rozmiar_batcha: int,
+    postep: Postep | None = None,
 ) -> tuple[torch.Tensor, list[int], list[str]]:
     """Liczy znormalizowane embeddingi wszystkich zdjec w podanym folderze
     (train lub val), pogrupowanych na podfoldery-klasy (osoby).
@@ -165,6 +219,8 @@ def policz_embeddingi(
             embeddingi = oblicz_znormalizowane_cechy(ekstraktor, obrazy)
             wszystkie_embeddingi.append(embeddingi.cpu())
             wszystkie_etykiety.extend(etykiety.tolist())
+            if postep is not None:
+                postep.dodaj(obrazy.shape[0])
 
     if klasy is None or not wszystkie_embeddingi:
         raise SystemExit(f"Brak zdjec do przetworzenia w {folder}.")
@@ -336,15 +392,25 @@ def main() -> None:
     # jej nie trenujemy, wiec to jedyne wagi, jakich kiedykolwiek uzyje.
     ekstraktor = zbuduj_ekstraktor_cech().to(urzadzenie)
 
+    postep = Postep(argumenty.postep)
+    folder_train = FOLDER_PRZETWORZONYCH_DANYCH / "train"
+    folder_val = FOLDER_PRZETWORZONYCH_DANYCH / "val"
+    # Kazde zdjecie liczymy tyle razy, ile jest wariantow jasnosci.
+    postep.start(
+        "embeddingi",
+        (policz_obrazy(folder_train) + policz_obrazy(folder_val))
+        * len(WSPOLCZYNNIKI_JASNOSCI),
+    )
+
     print("[info] Liczenie embeddingow zbioru treningowego...")
     embeddingi_trening, etykiety_trening, klasy = policz_embeddingi(
-        ekstraktor, FOLDER_PRZETWORZONYCH_DANYCH / "train", urzadzenie, argumenty.batch_size
+        ekstraktor, folder_train, urzadzenie, argumenty.batch_size, postep
     )
     print(f"[info] Klasy ({len(klasy)}): {klasy}")
 
     print("[info] Liczenie embeddingow zbioru walidacyjnego...")
     embeddingi_walidacja, etykiety_walidacja, klasy_walidacja = policz_embeddingi(
-        ekstraktor, FOLDER_PRZETWORZONYCH_DANYCH / "val", urzadzenie, argumenty.batch_size
+        ekstraktor, folder_val, urzadzenie, argumenty.batch_size, postep
     )
     if klasy_walidacja != klasy:
         raise SystemExit(

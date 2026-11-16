@@ -39,22 +39,15 @@ przelacz_na_venv_jesli_trzeba()
 
 # argparse - obsluga argumentow uruchomieniowych (--kamera, --korekta-progu itd.).
 import argparse
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-# json - do wczytania wzorcow tozsamosci i progow zapisanych
-# przez skrypt 03 (wzorce_osob.json).
-import json
 # sys - sprawdzenie, czy program dziala w interaktywnym terminalu (przed
 # pytaniem o usuniecie danych osoby po zakonczeniu podgladu).
 import sys
 # time - do mierzenia FPS (klatek na sekunde).
 import time
-# Path - obiektowa reprezentacja sciezek plikow/folderow.
-from pathlib import Path
 
 # cv2 - OpenCV: obsluga kamery, rysowanie ramek/tekstu, konwersja kolorow.
 import cv2
-import numpy as np
 # torch - glowny silnik PyTorch, tu uzywany do uruchomienia zamrozonego
 # ekstraktora cech na obrazie z kamery (tzw. inferencja).
 import torch
@@ -67,21 +60,20 @@ from common.dane_osob import (
 )
 from common.emotions import RozpoznawaczEmocji
 from common.face_detector import DetektorTwarzy, WykrytaTwarz
-from common.model import (
-    WERSJA_PRZYGOTOWANIA_OBRAZU,
-    oblicz_znormalizowane_cechy,
-    policz_podobienstwa_wzorca,
-    przygotuj_przeksztalcenie,
-    pobierz_urzadzenie,
-    zbuduj_ekstraktor_cech,
+from common.model import pobierz_urzadzenie, zbuduj_ekstraktor_cech
+# Wspolna logika rozpoznawania (ta sama, ktorej uzywa panel GUI):
+# wczytanie wzorcow, dopasowanie do osob i analiza pojedynczej klatki.
+from common.rozpoznawanie import (
+    BrakWzorcowError,
+    NiepoprawneWzorceError,
+    analizuj_klatke,
+    przygotuj_obrazy_kamery,
+    wczytaj_wzorce as wczytaj_wzorce_z_pliku,
 )
-
-FOLDER_MODELI = Path(__file__).parent / "models"
 
 # Kolory ramek w formacie BGR (tak przechowuje kolory OpenCV - odwrotnie niz RGB).
 KOLOR_ROZPOZNANY = (0, 200, 0)  # zielony
 KOLOR_NIEZNANY = (0, 0, 220)  # czerwony
-SKALE_KADRU_ROZPOZNAWANIA = (0.82, 0.72)
 LICZBA_WATKOW_OPENCV = 8
 
 
@@ -118,137 +110,16 @@ def parsuj_argumenty() -> argparse.Namespace:
 
 
 def wczytaj_wzorce(urzadzenie: torch.device) -> dict[str, dict]:
-    """Wczytuje z dysku wzorce tozsamosci i progi zapisane
-    przez 03_trenowanie_modelu.py, zamieniajac embeddingi z list
-    (format JSON) z powrotem na tensory PyTorch gotowe do liczenia
-    podobienstwa kosinusowego."""
-    sciezka_wzorcow = FOLDER_MODELI / "wzorce_osob.json"
-    if not sciezka_wzorcow.exists():
-        raise SystemExit(
-            "Brak wzorcow tozsamosci. Najpierw uruchom 03_trenowanie_modelu.py."
-        )
+    """Wczytuje wzorce tozsamosci i zamienia bledy na czytelny komunikat.
 
-    with open(sciezka_wzorcow, "r", encoding="utf-8") as plik:
-        try:
-            dane = json.load(plik)
-        except json.JSONDecodeError as blad:
-            raise SystemExit(
-                f"Plik {sciezka_wzorcow} jest uszkodzony ({blad}). "
-                "Uruchom ponownie 03_trenowanie_modelu.py."
-            ) from blad
-
-    if dane.get("wersja_przygotowania_obrazu") != WERSJA_PRZYGOTOWANIA_OBRAZU:
-        raise SystemExit(
-            "Wzorce twarzy sa nieaktualne i nie pasuja do nowego kadrowania. "
-            "Uruchom ponownie 03_trenowanie_modelu.py."
-        )
-
-    wzorce: dict[str, dict] = {}
-    for nazwa_osoby, wpis in dane.get("osoby", {}).items():
-        try:
-            prototypy = torch.tensor(wpis["prototypy"], device=urzadzenie)
-            prog = float(wpis["prog_podobienstwa"])
-        except (KeyError, TypeError, ValueError) as blad:
-            raise SystemExit(
-                f"Niepoprawny wpis dla osoby '{nazwa_osoby}' w {sciezka_wzorcow}: "
-                f"{blad}. Uruchom ponownie 03_trenowanie_modelu.py."
-            ) from blad
-        wzorce[nazwa_osoby] = {"prototypy": prototypy, "prog": prog}
-    return wzorce
-
-
-def rozpoznaj_twarz(
-    embedding: torch.Tensor, wzorce: dict[str, dict], korekta_progu: float
-) -> tuple[str, float]:
-    """Porownuje jeden lub kilka kadrow tej samej twarzy ze wzorcami osob.
-
-    DLA UCZNIOW: przegladamy wszystkie znane osoby, liczymy podobienstwo
-    kosinusowe (zwykly iloczyn skalarny dwoch wektorow jednostkowych) do
-    kazdej z nich, i wybieramy NAJLEPSZE dopasowanie sposrod kadrow oraz
-    prototypow. Kazda osoba ma WLASNY, skalibrowany prog, dlatego:
-
-      1. najpierw odrzucamy osoby, ktorych prog nie zostal osiagniety,
-      2. sposrod pozostalych wybieramy te z najwyzszym podobienstwem,
-      3. jesli zadna osoba nie przekroczyla swojego progu - "Nieznana osoba".
-
-    To wazne: samo "najwyzsze podobienstwo" nie wystarcza, bo osoba z bardzo
-    ostrym progiem moze miec surowo wyzszy wynik, a mimo to nie zostac
-    rozpoznana, podczas gdy inna osoba z nizszym progiem przekracza go.
+    Wlasciwa praca dzieje sie w common/rozpoznawaniu.py - tutaj tylko
+    tlumaczymy wyjatki na SystemExit, bo skrypt konsolowy konczy sie w ten
+    sposob (a panel GUI obsluguje te same wyjatki samodzielnie).
     """
-    if not wzorce:
-        return "Nieznana osoba", 0.0
-
-    embeddingi = embedding.unsqueeze(0) if embedding.ndim == 1 else embedding
-    najlepsza_nazwa = "Nieznana osoba"
-    najlepsze_podobienstwo = -1.0
-    najlepsze_podobienstwo_ogolne = -1.0
-
-    for nazwa_osoby, wpis in wzorce.items():
-        podobienstwo = (
-            policz_podobienstwa_wzorca(embeddingi, wpis["prototypy"]).max().item()
-        )
-        najlepsze_podobienstwo_ogolne = max(
-            najlepsze_podobienstwo_ogolne, podobienstwo
-        )
-
-        # Korekta z linii polecen nie moze wypchnac progu poza sensowny
-        # zakres podobienstwa kosinusowego [0, 1].
-        prog = min(1.0, max(0.0, wpis["prog"] + korekta_progu))
-        if podobienstwo >= prog and podobienstwo > najlepsze_podobienstwo:
-            najlepsza_nazwa = nazwa_osoby
-            najlepsze_podobienstwo = podobienstwo
-
-    if najlepsza_nazwa == "Nieznana osoba":
-        return najlepsza_nazwa, max(0.0, najlepsze_podobienstwo_ogolne)
-    return najlepsza_nazwa, najlepsze_podobienstwo
-
-
-def analizuj_klatke(
-    klatka: np.ndarray,
-    detektor: DetektorTwarzy,
-    ekstraktor: torch.nn.Module,
-    przygotuj_obrazy: list[Callable[[np.ndarray], torch.Tensor]],
-    wzorce: dict[str, dict],
-    urzadzenie: torch.device,
-    korekta_progu: float,
-    emocje: RozpoznawaczEmocji | None = None,
-) -> list[tuple[WykrytaTwarz, str, float, str, float]]:
-    """Batchuje embeddingi twarzy i odpytuje model dwoma ciasnymi kadrami.
-    Zwraca (twarz, osoba, podobienstwo, emocja, pewnosc_emocji)."""
-    tensory_wejsciowe = []
-    twarze = []
-    for twarz in detektor.wykryj(klatka):
-        wycinek = twarz.wytnij(klatka, margines=0.2)
-        if wycinek.size == 0:
-            continue
-
-        wycinek_rgb = cv2.cvtColor(wycinek, cv2.COLOR_BGR2RGB)
-        tensory_wejsciowe.extend(
-            przygotuj_obraz(wycinek_rgb) for przygotuj_obraz in przygotuj_obrazy
-        )
-        twarze.append(twarz)
-
-    if not tensory_wejsciowe:
-        if emocje is not None:
-            emocje.rozpoznaj(klatka, [])
-        return []
-
-    wyniki_emocji = (
-        emocje.rozpoznaj(klatka, twarze) if emocje is not None else [("", 0.0)] * len(twarze)
-    )
-
-    obrazy = torch.stack(tensory_wejsciowe).to(urzadzenie)
-    embeddingi = oblicz_znormalizowane_cechy(ekstraktor, obrazy)
-    liczba_kadrow = len(przygotuj_obrazy)
-    wyniki = []
-    for indeks, twarz in enumerate(twarze):
-        zakres = slice(indeks * liczba_kadrow, (indeks + 1) * liczba_kadrow)
-        etykieta, podobienstwo = rozpoznaj_twarz(
-            embeddingi[zakres], wzorce, korekta_progu
-        )
-        emocja, pewnosc_emocji = wyniki_emocji[indeks]
-        wyniki.append((twarz, etykieta, podobienstwo, emocja, pewnosc_emocji))
-    return wyniki
+    try:
+        return wczytaj_wzorce_z_pliku(urzadzenie=urzadzenie)
+    except (BrakWzorcowError, NiepoprawneWzorceError) as blad:
+        raise SystemExit(str(blad)) from blad
 
 
 def main() -> None:
@@ -276,13 +147,7 @@ def main() -> None:
 
     # Kadry korzystaja z tego samego rozmiaru i normalizacji co wzorce;
     # wejscie z OpenCV jest przed nimi konwertowane do PIL.
-    przygotuj_obrazy = [
-        przygotuj_przeksztalcenie(
-            wejscie_z_kamery=True,
-            skala_kadru=skala,
-        )
-        for skala in SKALE_KADRU_ROZPOZNAWANIA
-    ]
+    przygotuj_obrazy = przygotuj_obrazy_kamery()
 
     print(
         f"[info] Zadana rozdzielczosc kamery: "
