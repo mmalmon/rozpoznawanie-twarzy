@@ -21,6 +21,12 @@ standardowej biblioteki Pythona — nie instaluj go przez pip.
 
 ## Użycie
 
+Najprościej: **dwuklik na `Uruchom panel.bat`** w głównym folderze projektu.
+Plik sam wybiera Pythona z `.venv` (albo `py`/`python` z PATH), uruchamia
+`gui/main.py` i przy błędzie zatrzymuje okno z komunikatem.
+
+To samo z terminala:
+
 ```bash
 python gui/main.py
 ```

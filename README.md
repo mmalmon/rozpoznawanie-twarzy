@@ -127,6 +127,7 @@ rozpoznawanie twarzy/
 ├── 06_usun_dane_osoby.py        # pomocniczy: usuwa zdjęcia i wzorce wybranych osób
 ├── listuj_kamery.py             # pomocniczy: wypisuje dostępne kamery i ich rozdzielczości
 ├── pobierz_zdjecia_nieznajomych.py  # pomocniczy: pobiera zdjecia "obcych" osob do kalibracji progu
+├── Uruchom panel.bat            # dwuklik: uruchamia panel GUI (szuka Pythona z .venv)
 ├── common/
 │   ├── camera.py                # obsługa kamery (wybór, otwieranie, wymuszenie MJPG/4K)
 │   ├── dane_osob.py             # lista osób, numeracja zdjęć, bezpieczny odczyt JSON
@@ -277,7 +278,12 @@ python listuj_kamery.py
 ### 5. Panel GUI (opcjonalnie, ale wygodnie)
 
 Panel to natywne okno systemowe z interfejsem webowym w stylu AdminLTE
-(Bootstrap 5). Uruchomienie:
+(Bootstrap 5). Najprostsze uruchomienie: **dwuklik na pliku `Uruchom panel.bat`**
+w folderze projektu. Plik sam znajduje Pythona z `.venv` (a gdy go nie ma —
+launcher `py`/`python` z PATH) i otwiera okno panelu; przy błędzie pokazuje
+czytelny komunikat i nie zamyka konsoli.
+
+To samo z terminala:
 
 ```powershell
 python gui/main.py
