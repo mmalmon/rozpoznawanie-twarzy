@@ -187,6 +187,7 @@ class SilnikRozpoznawania:
             urzadzenie,
             korekta,
             emocje,
+            z_kandydatami=True,
         )
 
         return [
@@ -200,6 +201,9 @@ class SilnikRozpoznawania:
                 "podobienstwo": round(float(podobienstwo), 4),
                 "emocja": emocja,
                 "pewnosc_emocji": round(float(pewnosc_emocji), 4),
+                # TOP-3 wystarcza do panelu; pełna lista bywa długa i zwiększa
+                # ruch w JSON-ie wysyłanym co sekundę.
+                "kandydaci": kandydaci[:3],
             }
-            for twarz, osoba, podobienstwo, emocja, pewnosc_emocji in wyniki
+            for twarz, osoba, podobienstwo, emocja, pewnosc_emocji, kandydaci in wyniki
         ]

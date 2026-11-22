@@ -522,10 +522,10 @@ class StrumienKamery:
 
     def status(self) -> dict:
         with self._zamek:
+            teraz = time.monotonic()
             if self._stan in (STAN_ZATRZYMANY, STAN_BLAD):
                 fps = 0.0
             else:
-                teraz = time.monotonic()
                 ostatnie = [t for t in self._czasy_klatek if teraz - t <= GRANICA_FPS]
                 fps = len(ostatnie) / GRANICA_FPS if ostatnie else 0.0
 
@@ -545,6 +545,8 @@ class StrumienKamery:
                 "cel": self._cel,
                 "zapisane": self._zapisane,
                 "wyniki": list(self._wyniki),
+                "wyniki_aktualne": bool(self._wyniki)
+                and (teraz - self._czas_wynikow <= WAZNOSC_WYNIKOW),
             }
 
     def strumien(self):

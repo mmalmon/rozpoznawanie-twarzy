@@ -329,3 +329,52 @@ body.sidebar-zwiniety .app-main {
     display: block;
   }
 }
+
+/* ------------------------------------------- rozpoznawanie: TOP-3 */
+.podobienstwo-pasek {
+  position: relative;
+  padding-top: 0.15rem;
+}
+
+.podobienstwo-pasek .progress {
+  height: 0.45rem;
+  background: #e9ecef;
+}
+
+.podobienstwo-pasek .prog-znacznik {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: #212529;
+}
+
+.kandydat {
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #e9ecef;
+  border-radius: 0.45rem;
+}
+
+.kandydat + .kandydat {
+  margin-top: 0.4rem;
+}
+
+/* -------------------------------------------------- ewaluacja: wykresy */
+.wykres-ewaluacji {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid #dee2e6;
+  border-radius: 0.45rem;
+  background: #fff;
+}
+
+.pomylka-thumb {
+  display: block;
+  width: 100%;
+  height: 150px;
+  object-fit: cover;
+  border-radius: 0.45rem 0.45rem 0 0;
+  background: #e9ecef;
+}

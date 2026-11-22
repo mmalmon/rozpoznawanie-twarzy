@@ -38,6 +38,8 @@
     korektaProgu: document.getElementById('korektaProgu'),
     korektaProguWartosc: document.getElementById('korektaProguWartosc'),
     listaOsobModelu: document.getElementById('listaOsobModelu'),
+    badgeWyniku: document.getElementById('badgeWyniku'),
+    wynikiRozpoznawania: document.getElementById('wynikiRozpoznawania'),
 
     panelDodawanie: document.getElementById('panelDodawanie'),
     osobaNazwa: document.getElementById('osobaNazwa'),
@@ -58,6 +60,26 @@
     alertTreninguBlad: document.getElementById('alertTreninguBlad'),
     logTreningu: document.getElementById('logTreningu'),
     modelWTreningu: document.getElementById('modelWTreningu'),
+
+    viewEwaluacja: document.getElementById('viewEwaluacja'),
+    badgeEwaluacji: document.getElementById('badgeEwaluacji'),
+    etapEwaluacji: document.getElementById('etapEwaluacji'),
+    procentEwaluacji: document.getElementById('procentEwaluacji'),
+    pasekEwaluacji: document.getElementById('pasekEwaluacji'),
+    btnEwaluacjaStart: document.getElementById('btnEwaluacjaStart'),
+    btnEwaluacjaStop: document.getElementById('btnEwaluacjaStop'),
+    czasEwaluacji: document.getElementById('czasEwaluacji'),
+    alertEwaluacji: document.getElementById('alertEwaluacji'),
+    alertEwaluacjiBlad: document.getElementById('alertEwaluacjiBlad'),
+    logEwaluacji: document.getElementById('logEwaluacji'),
+    podsumowanieEwaluacji: document.getElementById('podsumowanieEwaluacji'),
+    dataRaportu: document.getElementById('dataRaportu'),
+    tabelaMetryk: document.getElementById('tabelaMetryk'),
+    tabelaPorownania: document.getElementById('tabelaPorownania'),
+    wykresyEwaluacji: document.getElementById('wykresyEwaluacji'),
+    galeriaPomylek: document.getElementById('galeriaPomylek'),
+    badgePomylek: document.getElementById('badgePomylek'),
+    ostrzezeniaEwaluacji: document.getElementById('ostrzezeniaEwaluacji'),
 
     viewBaza: document.getElementById('viewBaza'),
     badgeBazy: document.getElementById('badgeBazy'),
@@ -114,6 +136,11 @@
       podtytul: 'Podział danych, embeddingi i kalibracja progów',
       kamera: false,
     },
+    ewaluacja: {
+      tytul: 'Ewaluacja modelu',
+      podtytul: 'Accuracy, FAR/FRR, macierz pomyłek i porównanie metod',
+      kamera: false,
+    },
     baza: {
       tytul: 'Baza twarzy',
       podtytul: 'Podgląd i usuwanie zapisanych osób',
@@ -154,6 +181,22 @@
     przerwany: ['Przerwano', 'text-bg-secondary'],
   };
 
+  const OPIS_EWALUACJI = {
+    bezczynny: ['Bezczynna', 'text-bg-secondary'],
+    dziala: ['Trwa ewaluacja', 'text-bg-warning'],
+    gotowe: ['Gotowa', 'text-bg-success'],
+    blad: ['Błąd', 'text-bg-danger'],
+    przerwany: ['Przerwano', 'text-bg-secondary'],
+  };
+
+  const OPIS_WYKRESOW = {
+    macierz_pomylek: 'Macierz pomyłek',
+    rozklad_podobienstw: 'Rozkład podobieństw: swoi vs obcy',
+    krzywa_progu: 'Kompromis FAR / FRR',
+    porownanie_metod: 'Porównanie metod',
+    pca_embeddingi: 'Embeddingi w 2D (PCA)',
+  };
+
   const toastBlad = bootstrap.Toast.getOrCreateInstance(el.toastBlad, { delay: 9000 });
   const toastInfo = bootstrap.Toast.getOrCreateInstance(el.toastInfo, { delay: 6000 });
   const modalUsun = bootstrap.Modal.getOrCreateInstance(el.modalUsun);
@@ -168,11 +211,22 @@
     poprzednieZbieranie: 0,
     ostatniBlad: '',
     odswiezanie: false,
+    raportEwaluacji: null,
+    czasRaportu: null,
+    ostatnieWyniki: '',
   };
 
   // ------------------------------------------------------------- pomocnicze
   const formatuj = (wartosc, miejsca = 1) =>
     Number(wartosc || 0).toFixed(miejsca).replace('.', ',');
+
+  const formatujProcent = (wartosc, miejsca = 1) =>
+    wartosc === null || wartosc === undefined
+      ? '—'
+      : `${formatuj(wartosc * 100, miejsca)}%`;
+
+  const ogranicz = (wartosc, min = 0, max = 100) =>
+    Math.min(max, Math.max(min, Number(wartosc) || 0));
 
   const escapeHtml = (tekst) =>
     String(tekst).replace(/[&<>"']/g, (znak) => ({
@@ -314,6 +368,7 @@
     el.sekcjaKamery.classList.toggle('d-none', !opis.kamera);
     el.statRow.classList.toggle('d-none', !opis.kamera);
     el.viewTrening.classList.toggle('d-none', nazwa !== 'trening');
+    el.viewEwaluacja.classList.toggle('d-none', nazwa !== 'ewaluacja');
     el.viewBaza.classList.toggle('d-none', nazwa !== 'baza');
     el.viewInfo.classList.toggle('d-none', nazwa !== 'info');
 
@@ -334,6 +389,9 @@
     } else if (nazwa === 'trening') {
       await odswiezTrening();
       await odswiezInfoModelu();
+    } else if (nazwa === 'ewaluacja') {
+      await odswiezEwaluacje();
+      await odswiezRaportEwaluacji();
     } else if (nazwa === 'baza') {
       await odswiezBaze();
     }
@@ -473,6 +531,94 @@
       pokazBlad(dane.blad);
       pokazZatrzymany('Błąd kamery', 'Sprawdź, czy kamera nie jest używana przez inny program.');
     }
+
+    renderWynikiRozpoznawania(dane);
+  }
+
+  // ------------------------------------------- rozpoznawanie: TOP-3
+  const NIEZNANA_OSOBA = 'Nieznana osoba';
+
+  function renderWynikiRozpoznawania(dane) {
+    const aktywne = Boolean(dane && dane.dziala && dane.tryb === 'rozpoznawanie');
+    const wyniki =
+      aktywne && dane.wyniki_aktualne && Array.isArray(dane.wyniki) ? dane.wyniki : [];
+
+    if (!wyniki.length) {
+      if (stan.ostatnieWyniki === '') {
+        return;
+      }
+      stan.ostatnieWyniki = '';
+      el.badgeWyniku.textContent = aktywne ? 'Brak twarzy' : '—';
+      el.badgeWyniku.className = 'badge text-bg-secondary ms-auto';
+      el.wynikiRozpoznawania.innerHTML = aktywne
+        ? '<p class="small text-muted mb-0">Nie widzę twarzy w kadrze. Ustaw twarz przodem do kamery.</p>'
+        : '<p class="small text-muted mb-0">Uruchom podgląd w trybie Rozpoznawanie, aby zobaczyć TOP-3 kandydatów i porównanie z progiem.</p>';
+      return;
+    }
+
+    const klucz = JSON.stringify(wyniki);
+    if (klucz === stan.ostatnieWyniki) {
+      return;
+    }
+    stan.ostatnieWyniki = klucz;
+
+    const rozpoznano = wyniki.some(
+      (wynik) => wynik.osoba && wynik.osoba !== NIEZNANA_OSOBA,
+    );
+    el.badgeWyniku.textContent = rozpoznano ? 'Rozpoznano' : 'Osoba nieznana';
+    el.badgeWyniku.className = `badge ms-auto ${
+      rozpoznano ? 'text-bg-success' : 'text-bg-danger'
+    }`;
+
+    el.wynikiRozpoznawania.innerHTML = wyniki
+      .map((wynik, indeks) => {
+        const rozpoznana = Boolean(wynik.osoba && wynik.osoba !== NIEZNANA_OSOBA);
+        const kandydaci = Array.isArray(wynik.kandydaci)
+          ? wynik.kandydaci.slice(0, 3)
+          : [];
+
+        const paski = kandydaci.length
+          ? kandydaci
+              .map((kandydat) => {
+                const podobienstwo = Math.max(0, Number(kandydat.podobienstwo) || 0);
+                const prog = Math.max(0, Number(kandydat.prog) || 0);
+                const klasa = kandydat.akceptacja ? 'bg-success' : 'bg-secondary';
+                return (
+                  '<div class="kandydat">' +
+                  '<div class="d-flex justify-content-between small mb-1 gap-2">' +
+                  `<span class="${kandydat.akceptacja ? 'fw-semibold' : ''}">${escapeHtml(kandydat.osoba)}</span>` +
+                  '<span class="text-mono text-nowrap">' +
+                  `${formatujProcent(kandydat.podobienstwo)} ` +
+                  `<span class="text-muted">/ próg ${formatujProcent(kandydat.prog)}</span>` +
+                  '</span></div>' +
+                  '<div class="podobienstwo-pasek">' +
+                  `<div class="progress"><div class="progress-bar ${klasa}" style="width:${ogranicz(podobienstwo * 100)}%"></div></div>` +
+                  `<span class="prog-znacznik" style="left:${ogranicz(prog * 100)}%" title="próg ${formatujProcent(kandydat.prog)}"></span>` +
+                  '</div></div>'
+                );
+              })
+              .join('')
+          : '<div class="small text-muted">Brak listy kandydatów.</div>';
+
+        const emocja = wynik.emocja
+          ? `<div class="small text-muted mb-2">Emocja: ${escapeHtml(wynik.emocja)} ` +
+            `(${formatujProcent(wynik.pewnosc_emocji)})</div>`
+          : '';
+
+        return (
+          '<div class="mb-3">' +
+          '<div class="d-flex align-items-center gap-2 mb-2">' +
+          `<span class="fw-semibold">Twarz ${indeks + 1}</span>` +
+          `<span class="badge ${rozpoznana ? 'text-bg-success' : 'text-bg-danger'}">` +
+          `${rozpoznana ? escapeHtml(wynik.osoba) : 'Nieznana osoba'}</span>` +
+          `<span class="small text-muted ms-auto text-mono">${formatujProcent(wynik.podobienstwo)}</span>` +
+          '</div>' +
+          emocja +
+          paski +
+          '</div>'
+        );
+      })
+      .join('<hr class="my-2">');
   }
 
   async function odswiezStatus() {
@@ -808,6 +954,233 @@
     }
   }
 
+  // ----------------------------------------------------------- ewaluacja
+  function renderEwaluacja(dane) {
+    const [opis, klasa] = OPIS_EWALUACJI[dane.stan] || OPIS_EWALUACJI.bezczynny;
+    el.badgeEwaluacji.textContent = opis;
+    el.badgeEwaluacji.className = `badge ms-auto ${klasa}`;
+    el.etapEwaluacji.textContent = dane.etap || 'Gotowa do uruchomienia';
+    el.procentEwaluacji.textContent = `${Math.round(dane.postep || 0)}%`;
+    el.pasekEwaluacji.style.width = `${ogranicz(dane.postep)}%`;
+
+    const trwa = dane.stan === 'dziala';
+    el.btnEwaluacjaStart.disabled = trwa;
+    el.btnEwaluacjaStop.disabled = !trwa;
+    el.pasekEwaluacji.classList.toggle('progress-bar-animated', trwa);
+    el.pasekEwaluacji.classList.toggle('progress-bar-striped', trwa);
+
+    el.czasEwaluacji.textContent = dane.czas_s ? `Czas: ${opisCzasu(dane.czas_s)}` : '—';
+
+    el.alertEwaluacji.classList.toggle('d-none', dane.stan !== 'gotowe');
+    if (dane.stan === 'gotowe') {
+      el.alertEwaluacji.textContent =
+        'Ewaluacja zakończona. Raport, wykresy i galeria pomyłek są gotowe.';
+    }
+
+    const bladWidoczny = dane.stan === 'blad' || dane.stan === 'przerwany';
+    el.alertEwaluacjiBlad.classList.toggle('d-none', !bladWidoczny);
+    if (bladWidoczny) {
+      el.alertEwaluacjiBlad.textContent =
+        dane.blad || 'Ewaluacja nie została ukończona.';
+    }
+
+    const log = (dane.log || []).join('\n');
+    if (log && el.logEwaluacji.textContent !== log) {
+      el.logEwaluacji.textContent = log;
+      el.logEwaluacji.scrollTop = el.logEwaluacji.scrollHeight;
+    }
+  }
+
+  async function odswiezEwaluacje() {
+    try {
+      const dane = await pobierz('/api/ewaluacja/status');
+      renderEwaluacja(dane);
+      if (dane.czas_raportu && dane.czas_raportu !== stan.czasRaportu) {
+        stan.czasRaportu = dane.czas_raportu;
+        await odswiezRaportEwaluacji();
+      }
+      return dane;
+    } catch (blad) {
+      pokazBlad(blad.message);
+      return null;
+    }
+  }
+
+  async function startEwaluacji() {
+    el.btnEwaluacjaStart.disabled = true;
+    try {
+      await wyslij('/api/ewaluacja/start');
+      el.logEwaluacji.textContent = 'Uruchamianie ewaluacji…';
+      pokazInfo('Ewaluacja uruchomiona.');
+      await odswiezEwaluacje();
+    } catch (blad) {
+      pokazBlad(blad.message);
+      el.btnEwaluacjaStart.disabled = false;
+    }
+  }
+
+  async function stopEwaluacji() {
+    el.btnEwaluacjaStop.disabled = true;
+    try {
+      await wyslij('/api/ewaluacja/stop');
+      await odswiezEwaluacje();
+      pokazInfo('Ewaluacja przerwana.');
+    } catch (blad) {
+      pokazBlad(blad.message);
+    }
+  }
+
+  function renderRaportEwaluacji(dane) {
+    if (!dane || !dane.dostepny) {
+      el.dataRaportu.textContent = '—';
+      el.podsumowanieEwaluacji.innerHTML =
+        `<span class="text-muted">${escapeHtml(
+          (dane && dane.komunikat) || 'Brak raportu — uruchom ewaluację.',
+        )}</span>`;
+      el.tabelaMetryk.innerHTML =
+        '<tr><td colspan="5" class="text-muted small">Brak danych.</td></tr>';
+      el.tabelaPorownania.innerHTML =
+        '<tr><td colspan="6" class="text-muted small">Brak danych.</td></tr>';
+      el.wykresyEwaluacji.innerHTML =
+        '<div class="col-12 text-muted small">Wykresy pojawią się po ewaluacji.</div>';
+      el.galeriaPomylek.innerHTML =
+        '<div class="col-12 text-muted small">Brak zdjęć z błędami.</div>';
+      el.badgePomylek.textContent = '0';
+      return;
+    }
+
+    stan.raportEwaluacji = dane;
+    const wersja = dane.mtime || Date.now();
+    const prototypy = dane.prototypy || {};
+    const metryki = prototypy.metryki || {};
+    const informacje = dane.dane || {};
+
+    el.dataRaportu.textContent = dane.wygenerowano
+      ? dane.wygenerowano.replace('T', ' ')
+      : '—';
+
+    const karty = [
+      ['Accuracy', formatujProcent(metryki.accuracy), `${metryki.poprawne ?? '—'}/${metryki.liczba_znanych ?? '—'}`],
+      ['FAR', formatujProcent(metryki.far), `${metryki.zaakceptowani_obcy ?? '—'} obcych`],
+      ['FRR', formatujProcent(metryki.frr), `${metryki.odrzucone_znane ?? '—'} odrzuconych`],
+      ['EER', formatujProcent(prototypy.eer), prototypy.prog_eer != null ? `próg ${formatuj(prototypy.prog_eer, 2)}` : '—'],
+      ['AUC', prototypy.auc != null ? formatuj(prototypy.auc, 3) : '—', '1,0 = idealnie'],
+    ];
+
+    el.podsumowanieEwaluacji.innerHTML =
+      '<div class="row g-2">' +
+      karty
+        .map(
+          ([nazwa, wartosc, dopisek]) =>
+            '<div class="col-6"><div class="border rounded p-2 h-100">' +
+            `<div class="text-muted text-uppercase" style="font-size:.65rem;">${nazwa}</div>` +
+            `<div class="h5 mb-0 text-mono">${wartosc}</div>` +
+            `<div class="text-muted" style="font-size:.7rem;">${dopisek}</div>` +
+            '</div></div>',
+        )
+        .join('') +
+      '</div>' +
+      `<p class="small text-muted mt-2 mb-0">Osoby: ${escapeHtml((informacje.osoby || []).join(', ') || '—')}` +
+      ` · trening: ${informacje.trening ? informacje.trening.zdjecia : '—'} zdjęć` +
+      ` · obcy: ${informacje.obcy ? informacje.obcy.zdjecia : '—'} zdjęć</p>`;
+
+    const naOsobe = Object.entries(prototypy.na_osobe || {});
+    el.tabelaMetryk.innerHTML = naOsobe.length
+      ? naOsobe
+          .map(
+            ([osoba, metryka]) =>
+              '<tr>' +
+              `<td class="fw-semibold">${escapeHtml(osoba)}</td>` +
+              `<td class="text-end text-mono">${metryka.zdjecia}</td>` +
+              `<td class="text-end text-mono">${formatujProcent(metryka.precision)}</td>` +
+              `<td class="text-end text-mono">${formatujProcent(metryka.recall)}</td>` +
+              `<td class="text-end text-mono">${formatujProcent(metryka.f1)}</td>` +
+              '</tr>',
+          )
+          .join('')
+      : '<tr><td colspan="5" class="text-muted small">Brak danych.</td></tr>';
+
+    const porownanie = dane.porownanie || [];
+    el.tabelaPorownania.innerHTML = porownanie.length
+      ? porownanie
+          .map(
+            (wpis) =>
+              '<tr>' +
+              `<td class="fw-semibold">${escapeHtml(wpis.metoda)}</td>` +
+              `<td class="text-end text-mono">${formatujProcent(wpis.accuracy_zamknieta)}</td>` +
+              `<td class="text-end text-mono">${formatujProcent(wpis.far)}</td>` +
+              `<td class="text-end text-mono">${formatujProcent(wpis.frr)}</td>` +
+              `<td class="text-end text-mono">${formatujProcent(wpis.eer)}</td>` +
+              `<td class="text-end text-mono">${wpis.auc != null ? formatuj(wpis.auc, 3) : '—'}</td>` +
+              '</tr>',
+          )
+          .join('')
+      : '<tr><td colspan="6" class="text-muted small">Brak danych.</td></tr>';
+
+    const wykresy = Object.entries(dane.wykresy || {});
+    el.wykresyEwaluacji.innerHTML = wykresy.length
+      ? wykresy
+          .map(([klucz, plik]) => {
+            const opis = OPIS_WYKRESOW[klucz] || klucz;
+            const adres = `/api/ewaluacja/wykres/${encodeURIComponent(plik)}?v=${wersja}`;
+            return (
+              '<div class="col-xl-6"><div class="card h-100 border">' +
+              '<div class="card-body p-2">' +
+              `<img class="wykres-ewaluacji" src="${adres}" alt="${escapeHtml(opis)}" loading="lazy">` +
+              `<div class="small text-muted mt-2 text-center">${escapeHtml(opis)}</div>` +
+              '</div></div></div>'
+            );
+          })
+          .join('')
+      : '<div class="col-12 text-muted small">Brak wykresów.</div>';
+
+    const pomylki = dane.pomylki || [];
+    el.badgePomylek.textContent = String(pomylki.length);
+    el.galeriaPomylek.innerHTML = pomylki.length
+      ? pomylki
+          .map((wpis) => {
+            if (!wpis.plik) {
+              return '';
+            }
+            const opis = `${wpis.prawdziwa} → ${wpis.przewidziana}`;
+            const typKlasy =
+              wpis.typ === 'obcy zaakceptowany' ? 'text-bg-danger' : 'text-bg-warning';
+            const adres = `/api/ewaluacja/pomylka/${encodeURIComponent(wpis.plik)}?v=${wersja}`;
+            return (
+              '<div class="col-6 col-md-4 col-xxl-3"><div class="card h-100 border">' +
+              `<img class="pomylka-thumb" src="${adres}" alt="${escapeHtml(opis)}" loading="lazy">` +
+              '<div class="card-body p-2 small">' +
+              `<div class="fw-semibold text-truncate" title="${escapeHtml(opis)}">` +
+              `${escapeHtml(wpis.prawdziwa)} → ${escapeHtml(wpis.przewidziana)}</div>` +
+              '<div class="d-flex justify-content-between align-items-center mt-1 gap-1">' +
+              `<span class="badge ${typKlasy}">${escapeHtml(wpis.typ)}</span>` +
+              `<span class="text-mono text-muted">${formatujProcent(wpis.podobienstwo)}</span>` +
+              '</div></div></div></div>'
+            );
+          })
+          .join('')
+      : '<div class="col-12 text-muted small">Model nie popełnił żadnych błędów (albo raport ich nie zawiera).</div>';
+
+    const ostrzezenia = informacje.ostrzezenia || [];
+    el.ostrzezeniaEwaluacji.innerHTML = ostrzezenia.length
+      ? ostrzezenia
+          .map(
+            (tekst, indeks) =>
+              `<p class="${indeks === ostrzezenia.length - 1 ? 'mb-0' : 'mb-1'}">${escapeHtml(tekst)}</p>`,
+          )
+          .join('')
+      : 'Ewaluacja korzysta ze zbioru walidacyjnego — wyniki są optymistyczne.';
+  }
+
+  async function odswiezRaportEwaluacji() {
+    try {
+      const dane = await pobierz('/api/ewaluacja/raport');
+      renderRaportEwaluacji(dane);
+    } catch (blad) {
+      pokazBlad(blad.message);
+    }
+  }
+
   // ----------------------------------------------------------------- baza
   function renderBaza(dane) {
     const osoby = dane.osoby || [];
@@ -975,6 +1348,8 @@
 
     el.btnTreningStart.addEventListener('click', startTreningu);
     el.btnTreningStop.addEventListener('click', stopTreningu);
+    el.btnEwaluacjaStart.addEventListener('click', startEwaluacji);
+    el.btnEwaluacjaStop.addEventListener('click', stopEwaluacji);
     el.btnOdswiezBaze.addEventListener('click', odswiezBaze);
     el.btnPotwierdzUsun.addEventListener('click', potwierdzUsuniecie);
 
@@ -1047,6 +1422,13 @@
     setInterval(() => {
       if (stan.widok === 'trening') {
         odswiezTrening();
+      }
+    }, 1000);
+
+    // Ewaluacja: log i wykresy pobieramy tylko, gdy użytkownik patrzy na widok.
+    setInterval(() => {
+      if (stan.widok === 'ewaluacja') {
+        odswiezEwaluacje();
       }
     }, 1000);
   }

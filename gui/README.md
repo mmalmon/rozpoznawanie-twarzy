@@ -44,9 +44,10 @@ Panel prowadzi cały proces — nie trzeba już przełączać się do konsoli:
 | Zakładka | Co robi |
 | --- | --- |
 | **Detekcja na żywo** | Ramki wokół twarzy, procent pewności, FPS, liczba twarzy. Wybór kamery, progu i minimalnej proporcji twarzy. |
-| **Rozpoznawanie** | Wczytuje `models/wzorce_osob.json` w tle i pokazuje imię + podobieństwo. Suwak **Korekta progu** (jak `--korekta-progu` w `04`). Przełącznik **Wykrywanie emocji** (domyślnie OFF). |
+| **Rozpoznawanie** | Wczytuje `models/wzorce_osob.json` w tle i pokazuje imię + podobieństwo. Karta **Wynik rozpoznawania** pokazuje TOP-3 kandydatów: paski podobieństwa i znacznik progu. Suwak **Korekta progu** (jak `--korekta-progu` w `04`). Przełącznik **Wykrywanie emocji** (domyślnie OFF). |
 | **Dodaj twarz** | Zapisuje wycięte twarze 224×224 do `data/raw/<osoba>/` co ok. 0,3 s, z licznikiem i celem. Działa jak automatyczny tryb `01_zbieranie_danych.py`. |
 | **Trening** | Uruchamia `02_podzial_danych.py`, a potem `03_trenowanie_modelu.py --postep` w osobnym procesie. Pasek postępu, etap, log i przycisk **Przerwij**. |
+| **Ewaluacja** | Uruchamia `07_ewaluacja.py --postep` w osobnym procesie. Pokazuje accuracy, FAR/FRR, EER, AUC, metryki na osobę, porównanie metod, wykresy PNG i galerię pomyłek. |
 | **Baza twarzy** | Miniatury, liczba zdjęć, usuwanie osoby (opcjonalnie z ponownym treningiem). |
 | **O projekcie** | Krótka instrukcja i uwagi o prywatności / AI Act. |
 
@@ -55,7 +56,8 @@ Dodatkowo:
 - lista wykrytych kamer i przycisk odświeżenia (skanowanie w tle),
 - start/stop podglądu z poprawnym zwalnianiem kamery,
 - statusy i komunikaty błędów w postaci toastów,
-- po udanym treningu silnik **przeładowuje wzorce bez restartu** panelu.
+- po udanym treningu silnik **przeładowuje wzorce bez restartu** panelu,
+- TOP-3 kandydatów w rozpoznawaniu (bez zmiany logiki decyzyjnej `04`).
 
 ## Jak to działa
 
@@ -65,6 +67,7 @@ gui/server.py          endpointy API + strumień MJPEG (tylko 127.0.0.1)
 gui/camera_stream.py   wątek kamery: detekcja / rozpoznawanie / zbieranie zdjęć
 gui/rozpoznawanie.py   silnik: modele, wzorce, emocje, korekta progu
 gui/trening.py         subprocess 02 + 03, parser [postep], log i przerwanie
+gui/ewaluacja.py       subprocess 07, parser [postep], log i przerwanie
 gui/templates/         index.html (jeden widok, przełączane zakładki)
 gui/static/            Bootstrap 5 (lokalnie) + app.css + app.js
 common/rozpoznawanie.py wspólna logika dopasowania używana też przez 04
@@ -106,6 +109,13 @@ GET  /api/trening/status        stan treningu (etap, %, log)
 POST /api/trening/start         uruchom 02 + 03
 POST /api/trening/stop          przerwij trening
 
+GET  /api/ewaluacja/status      stan ewaluacji (etap, %, log)
+POST /api/ewaluacja/start       uruchom 07_ewaluacja.py
+POST /api/ewaluacja/stop        przerwij ewaluację
+GET  /api/ewaluacja/raport      ostatni raport JSON
+GET  /api/ewaluacja/wykres/<n>  wykres PNG z models/ewaluacja/wykresy
+GET  /api/ewaluacja/pomylka/<n> zdjęcie z galerii pomyłek
+
 GET  /api/baza                  osoby, liczba zdjęć, informacje o modelu
 GET  /api/baza/<osoba>/zdjecie  przykładowe zdjęcie osoby
 POST /api/baza/usun             usuń osobę (wymaga potwierdzenia nazwą)
@@ -126,6 +136,38 @@ ich wyjście na bieżąco. `03_trenowanie_modelu.py --postep` wypisuje linie:
 Panel mapuje etap `02` na 0–10%, `03` na 10–95%, a zapis wyniku na 95–100%.
 Linie maszynowe nie trafiają do logu widocznego dla ucznia. Przerwanie
 przyciskiem **Przerwij** zabija proces potomny i nie nadpisuje modelu.
+
+## Ewaluacja
+
+`gui/ewaluacja.py` uruchamia `07_ewaluacja.py --postep` w osobnym procesie
+i czyta te same maszynowe linie postępu:
+
+```
+[postep-start] embeddingi 2785
+[postep] embeddingi 32
+...
+[postep-start] metryki 4
+```
+
+Faza `embeddingi` odpowiada za 0–82% paska, a `metryki` (prototypy, k-NN,
+regresja logistyczna, wykresy i zapis raportu) za 82–97%. Po sukcesie pasek
+pokazuje 100%, a panel odświeża raport.
+
+Zakładka **Ewaluacja** pokazuje:
+
+- badge stanu i etap, procent, czas oraz log (bez linii maszynowych),
+- podsumowanie: accuracy, FAR, FRR, EER, AUC,
+- tabelę precision / recall / F1 na osobę,
+- tabelę porównania metod (prototypy, k-NN, regresja logistyczna),
+- wykresy PNG i galerię pomyłek z podpisami „prawdziwa → przewidziana”,
+- ostrzeżenia metodologiczne z raportu (wyniki na `val` są optymistyczne,
+  bo ten zbiór posłużył do kalibracji progów).
+
+Raport i obrazy są serwowane wyłącznie z `models/ewaluacja/`; endpointy
+sprawdzają rozszerzenie pliku i odrzucają próby wyjścia poza folder
+(`../`). Przyciski **Uruchom ewaluację** / **Przerwij** działają tak samo jak
+w treningu — przerwanie zabija proces potomny i nie zostawia połowy raportu
+(zapis odbywa się atomowo przez plik tymczasowy).
 
 ## Pliki Bootstrapa
 

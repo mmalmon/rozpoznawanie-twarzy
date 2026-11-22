@@ -85,6 +85,7 @@ def main() -> None:
 
     aplikacja = utworz_aplikacje(strumien, silnik)
     menedzer = getattr(aplikacja, "menedzer_treningu", None)
+    menedzer_ewaluacji = getattr(aplikacja, "menedzer_ewaluacji", None)
     port = _wolny_port()
     serwer = make_server("127.0.0.1", port, aplikacja, threaded=True)
     watek_serwera = threading.Thread(
@@ -118,6 +119,8 @@ def main() -> None:
         strumien.stop()
         if menedzer is not None:
             menedzer.zatrzymaj()
+        if menedzer_ewaluacji is not None:
+            menedzer_ewaluacji.zatrzymaj()
         serwer.shutdown()
 
     okno.events.closed += _posprzataj

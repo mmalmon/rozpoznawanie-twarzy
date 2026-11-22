@@ -28,6 +28,13 @@ Endpointy:
   GET  /api/baza                  osoby, liczba zdjęć, informacje o modelu
   GET  /api/baza/<osoba>/zdjecie  przykładowe zdjęcie osoby
   POST /api/baza/usun             usuń osobę (opcjonalnie przetrenuj)
+
+  GET  /api/ewaluacja/status      stan ewaluacji (etap, %, log)
+  POST /api/ewaluacja/start       uruchom 07_ewaluacja.py
+  POST /api/ewaluacja/stop        przerwij ewaluację
+  GET  /api/ewaluacja/raport      ostatni raport JSON
+  GET  /api/ewaluacja/wykres/<n>  wykres PNG z models/ewaluacja/wykresy
+  GET  /api/ewaluacja/pomylka/<n> zdjęcie z galerii pomyłek
 """
 
 from __future__ import annotations
@@ -54,10 +61,17 @@ from gui.camera_stream import (
     TRYBY,
     StrumienKamery,
 )
+from gui.ewaluacja import (
+    FOLDER_POMYLEK,
+    FOLDER_WYKRESOW,
+    PLIK_RAPORTU,
+    MenedzerEwaluacji,
+)
 from gui.rozpoznawanie import SilnikRozpoznawania
 from gui.trening import MenedzerTreningu
 
 ROZSZERZENIA_ZDJEC = {".jpg", ".jpeg", ".png"}
+ROZSZERZENIA_GRAFIK = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def _bledy_pliku_wzorcow() -> str | None:
@@ -81,6 +95,17 @@ def _zdjecia_osoby(osoba: str) -> list[Path]:
         if plik.is_file() and plik.suffix.lower() in ROZSZERZENIA_ZDJEC
     ]
     return sorted(pliki, key=lambda plik: plik.name)
+
+
+def _plik_ewaluacji(folder: Path, nazwa: str) -> Path | None:
+    """Bezpiecznie zamienia nazwę z URL na plik wewnątrz folderu ewaluacji."""
+    if not nazwa:
+        return None
+    bezpieczna = Path(nazwa).name
+    if Path(bezpieczna).suffix.lower() not in ROZSZERZENIA_GRAFIK:
+        return None
+    sciezka = folder / bezpieczna
+    return sciezka if sciezka.is_file() else None
 
 
 def _opis_bazy() -> dict:
@@ -142,6 +167,9 @@ def utworz_aplikacje(
     menedzer = MenedzerTreningu(po_zakonczeniu=_po_treningu)
     # Main.py używa tego przy zamykaniu okna, żeby zabić proces treningu.
     aplikacja.menedzer_treningu = menedzer  # type: ignore[attr-defined]
+
+    menedzer_ewaluacji = MenedzerEwaluacji()
+    aplikacja.menedzer_ewaluacji = menedzer_ewaluacji  # type: ignore[attr-defined]
 
     @aplikacja.after_request
     def _naglowki(odpowiedz):
@@ -359,6 +387,72 @@ def utworz_aplikacje(
         return jsonify(
             {"ok": True, "przerwano": przerwano, "status": menedzer.status()}
         )
+
+    # --------------------------------------------------------- ewaluacja
+    @aplikacja.get("/api/ewaluacja/status")
+    def ewaluacja_status():
+        return jsonify(menedzer_ewaluacji.status())
+
+    @aplikacja.post("/api/ewaluacja/start")
+    def ewaluacja_start():
+        try:
+            menedzer_ewaluacji.start()
+        except RuntimeError as blad:
+            return jsonify({"ok": False, "komunikat": str(blad)}), 409
+        return jsonify({"ok": True, "status": menedzer_ewaluacji.status()})
+
+    @aplikacja.post("/api/ewaluacja/stop")
+    def ewaluacja_stop():
+        przerwano = menedzer_ewaluacji.zatrzymaj()
+        return jsonify(
+            {
+                "ok": True,
+                "przerwano": przerwano,
+                "status": menedzer_ewaluacji.status(),
+            }
+        )
+
+    @aplikacja.get("/api/ewaluacja/raport")
+    def ewaluacja_raport():
+        if not PLIK_RAPORTU.is_file():
+            return jsonify(
+                {
+                    "dostepny": False,
+                    "komunikat": "Brak raportu. Uruchom ewaluację.",
+                }
+            )
+        try:
+            dane = json.loads(PLIK_RAPORTU.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as blad:
+            return (
+                jsonify(
+                    {
+                        "dostepny": False,
+                        "komunikat": f"Raport jest uszkodzony: {blad}",
+                    }
+                ),
+                500,
+            )
+        dane["dostepny"] = True
+        try:
+            dane["mtime"] = int(PLIK_RAPORTU.stat().st_mtime)
+        except OSError:
+            dane["mtime"] = 0
+        return jsonify(dane)
+
+    @aplikacja.get("/api/ewaluacja/wykres/<nazwa>")
+    def ewaluacja_wykres(nazwa: str):
+        sciezka = _plik_ewaluacji(FOLDER_WYKRESOW, nazwa)
+        if sciezka is None:
+            return jsonify({"ok": False, "komunikat": "Nie ma takiego wykresu."}), 404
+        return send_file(sciezka, max_age=0)
+
+    @aplikacja.get("/api/ewaluacja/pomylka/<nazwa>")
+    def ewaluacja_pomylka(nazwa: str):
+        sciezka = _plik_ewaluacji(FOLDER_POMYLEK, nazwa)
+        if sciezka is None:
+            return jsonify({"ok": False, "komunikat": "Nie ma takiego zdjęcia."}), 404
+        return send_file(sciezka, max_age=0)
 
     # ---------------------------------------------------------------- baza
     @aplikacja.get("/api/baza")

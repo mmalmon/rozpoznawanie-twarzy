@@ -50,6 +50,12 @@
         </svg>
         Trening
       </button>
+      <button class="nav-link" type="button" data-view="ewaluacja">
+        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-6"/><path d="M22 20H2"/>
+        </svg>
+        Ewaluacja
+      </button>
       <button class="nav-link" type="button" data-view="baza">
         <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>
@@ -287,6 +293,19 @@
                 <div id="listaOsobModelu" class="d-flex flex-wrap gap-2 small text-muted">—</div>
               </div>
             </div>
+
+            <div class="card app-card mt-3">
+              <div class="card-header d-flex align-items-center">
+                Wynik rozpoznawania
+                <span class="badge text-bg-secondary ms-auto" id="badgeWyniku">—</span>
+              </div>
+              <div class="card-body" id="wynikiRozpoznawania">
+                <p class="small text-muted mb-0">
+                  Uruchom podgląd, aby zobaczyć TOP-3 kandydatów i porównanie
+                  podobieństwa z progiem decyzyjnym.
+                </p>
+              </div>
+            </div>
           </div>
 
           <!-- ---------------------------------------------- panel: dodawanie -->
@@ -383,6 +402,164 @@
           <div class="card app-card">
             <div class="card-header">Aktualny model</div>
             <div class="card-body small" id="modelWTreningu">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======================================================== ewaluacja -->
+      <div class="row g-3 d-none" id="viewEwaluacja">
+        <div class="col-lg-7">
+          <div class="card app-card">
+            <div class="card-header d-flex align-items-center">
+              Ewaluacja modelu
+              <span class="badge text-bg-secondary ms-auto" id="badgeEwaluacji">Bezczynna</span>
+            </div>
+            <div class="card-body">
+              <div class="d-flex justify-content-between mb-1">
+                <span id="etapEwaluacji" class="fw-semibold">Gotowa do uruchomienia</span>
+                <span class="text-mono" id="procentEwaluacji">0%</span>
+              </div>
+              <div class="progress mb-3" style="height: 0.9rem;" role="progressbar" aria-label="Postęp ewaluacji">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" id="pasekEwaluacji" style="width: 0%"></div>
+              </div>
+
+              <div class="d-flex flex-wrap gap-2 mb-3">
+                <button class="btn btn-primary" id="btnEwaluacjaStart" type="button">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5v14l11-7z"/>
+                  </svg>
+                  Uruchom ewaluację
+                </button>
+                <button class="btn btn-outline-danger" id="btnEwaluacjaStop" type="button" disabled>
+                  Przerwij
+                </button>
+                <span class="small text-muted align-self-center" id="czasEwaluacji">—</span>
+              </div>
+
+              <div class="alert alert-success d-none small" id="alertEwaluacji" role="alert"></div>
+              <div class="alert alert-danger d-none small" id="alertEwaluacjiBlad" role="alert"></div>
+
+              <label class="form-label small text-muted" for="logEwaluacji">Log</label>
+              <pre class="log-treningu mb-0" id="logEwaluacji">Ewaluacja nie została jeszcze uruchomiona.</pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-5">
+          <div class="card app-card mb-3">
+            <div class="card-header">Co mierzymy?</div>
+            <div class="card-body small text-muted">
+              <p class="mb-2">
+                <strong>Accuracy</strong> — ile znanych twarzy rozpoznano poprawnie.
+                Sama dokładność nie wystarcza: model może być „dobry” na znanych
+                osobach, a jednocześnie wpuszczać obcych.
+              </p>
+              <p class="mb-2">
+                <strong>FAR</strong> — odsetek obcych zaakceptowanych jako znana osoba
+                (najgroźniejszy błąd). <strong>FRR</strong> — odsetek znanych osób
+                odrzuconych jako nieznane.
+              </p>
+              <p class="mb-2">
+                <strong>EER</strong> — punkt, w którym FAR = FRR. Im niżej, tym lepiej.
+                <strong>AUC</strong> — jak dobrze ranking podobieństw rozdziela swoich
+                od obcych (1,0 = idealnie, 0,5 = losowo).
+              </p>
+              <p class="mb-0">
+                Porównujemy też <strong>prototypy</strong>, <strong>k-NN</strong> i
+                <strong>regresję logistyczną</strong> na tych samych embeddingach.
+              </p>
+            </div>
+          </div>
+
+          <div class="card app-card">
+            <div class="card-header d-flex align-items-center">
+              Ostatni raport
+              <span class="small text-muted ms-auto" id="dataRaportu">—</span>
+            </div>
+            <div class="card-body small" id="podsumowanieEwaluacji">
+              <span class="text-muted">Brak raportu — uruchom ewaluację.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header">Metryki na osobę (prototypy)</div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0 align-middle">
+                  <thead>
+                    <tr>
+                      <th>Osoba</th>
+                      <th class="text-end">Zdjęcia</th>
+                      <th class="text-end">Precision</th>
+                      <th class="text-end">Recall</th>
+                      <th class="text-end">F1</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tabelaMetryk">
+                    <tr><td colspan="5" class="text-muted small">Brak danych.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header">Porównanie metod</div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0 align-middle">
+                  <thead>
+                    <tr>
+                      <th>Metoda</th>
+                      <th class="text-end">Accuracy (zamknięta)</th>
+                      <th class="text-end">FAR</th>
+                      <th class="text-end">FRR</th>
+                      <th class="text-end">EER</th>
+                      <th class="text-end">AUC</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tabelaPorownania">
+                    <tr><td colspan="6" class="text-muted small">Brak danych.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header">Wykresy</div>
+            <div class="card-body">
+              <div class="row g-3" id="wykresyEwaluacji">
+                <div class="col-12 text-muted small">Wykresy pojawią się po ewaluacji.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header d-flex align-items-center gap-2">
+              Galeria pomyłek
+              <span class="badge text-bg-light border" id="badgePomylek">0</span>
+            </div>
+            <div class="card-body">
+              <div class="row g-3" id="galeriaPomylek">
+                <div class="col-12 text-muted small">Brak zdjęć z błędami.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="alert alert-warning small mb-0" id="ostrzezeniaEwaluacji">
+            Ewaluacja korzysta ze zbioru walidacyjnego, który był już użyty do
+            kalibracji progów w skrypcie 03 — wyniki są optymistyczne.
           </div>
         </div>
       </div>

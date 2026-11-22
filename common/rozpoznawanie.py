@@ -101,35 +101,40 @@ def wczytaj_wzorce(
     return wzorce
 
 
-def rozpoznaj_twarz(
+def ocen_kandydatow(
     embedding: torch.Tensor,
     wzorce: dict[str, dict],
     korekta_progu: float = 0.0,
-) -> tuple[str, float]:
-    """Porównuje jeden lub kilka kadrów tej samej twarzy ze wzorcami osób.
+) -> tuple[str, float, list[dict]]:
+    """Porównuje kadry twarzy ze wzorcami i zwraca pełny ranking kandydatów.
 
-    DLA UCZNIÓW: przeglądamy wszystkie znane osoby, liczymy podobieństwo
-    kosinusowe do każdej z nich i wybieramy NAJLEPSZE dopasowanie spośród
-    kadrów oraz prototypów. Każda osoba ma WŁASNY, skalibrowany próg, dlatego:
+    DLA UCZNIÓW: to serce decyzji "kto to jest?". Dla KAŻDEJ znanej osoby
+    liczymy podobieństwo kosinusowe do jej najlepszego prototypu, a potem
+    porządkujemy osoby od najbardziej do najmniej podobnej. Dzięki temu panel
+    może pokazać nie tylko zwycięzcę, ale też TOP-3 kandydatów i to, jak blisko
+    progu decyzyjnego znaleźli się pozostali.
 
-      1. najpierw odrzucamy osoby, których próg nie został osiągnięty,
-      2. spośród pozostałych wybieramy tę z najwyższym podobieństwem,
-      3. jeśli żadna osoba nie przekroczyła swojego progu - "Nieznana osoba".
+    Zwraca krotkę:
+      - etykieta (nazwa osoby albo "Nieznana osoba"),
+      - podobieństwo wybranej osoby (przy braku akceptacji - najlepsze ogólne),
+      - lista słowników {"osoba", "podobienstwo", "prog", "akceptacja"},
+        posortowana malejąco po podobieństwie.
 
-    To ważne: samo "najwyższe podobieństwo" nie wystarcza, bo osoba z bardzo
+    Ważne: samo "najwyższe podobieństwo" nie wystarcza, bo osoba z bardzo
     ostrym progiem może mieć surowo wyższy wynik, a mimo to nie zostać
-    rozpoznana, podczas gdy inna osoba z niższym progiem przekracza go.
+    rozpoznana, podczas gdy inna osoba z niższym progiem przekracza swój próg.
     """
     if not wzorce:
-        return NAZWA_NIEZNANEJ, 0.0
+        return NAZWA_NIEZNANEJ, 0.0, []
 
     embeddingi = embedding.unsqueeze(0) if embedding.ndim == 1 else embedding
     najlepsza_nazwa = NAZWA_NIEZNANEJ
     najlepsze_podobienstwo = -1.0
     najlepsze_podobienstwo_ogolne = -1.0
+    kandydaci: list[dict] = []
 
     for nazwa_osoby, wpis in wzorce.items():
-        podobienstwo = (
+        podobienstwo = float(
             policz_podobienstwa_wzorca(embeddingi, wpis["prototypy"]).max().item()
         )
         najlepsze_podobienstwo_ogolne = max(
@@ -139,13 +144,40 @@ def rozpoznaj_twarz(
         # Korekta progu nie może wypchnąć go poza sensowny zakres
         # podobieństwa kosinusowego [0, 1].
         prog = min(1.0, max(0.0, wpis["prog"] + korekta_progu))
-        if podobienstwo >= prog and podobienstwo > najlepsze_podobienstwo:
+        akceptacja = podobienstwo >= prog
+        kandydaci.append(
+            {
+                "osoba": nazwa_osoby,
+                "podobienstwo": round(podobienstwo, 4),
+                "prog": round(prog, 4),
+                "akceptacja": akceptacja,
+            }
+        )
+
+        if akceptacja and podobienstwo > najlepsze_podobienstwo:
             najlepsza_nazwa = nazwa_osoby
             najlepsze_podobienstwo = podobienstwo
 
+    # Przy remisie sortujemy alfabetycznie, żeby wynik był powtarzalny.
+    kandydaci.sort(key=lambda kandydat: (-kandydat["podobienstwo"], kandydat["osoba"]))
+
     if najlepsza_nazwa == NAZWA_NIEZNANEJ:
-        return najlepsza_nazwa, max(0.0, najlepsze_podobienstwo_ogolne)
-    return najlepsza_nazwa, najlepsze_podobienstwo
+        return najlepsza_nazwa, max(0.0, najlepsze_podobienstwo_ogolne), kandydaci
+    return najlepsza_nazwa, najlepsze_podobienstwo, kandydaci
+
+
+def rozpoznaj_twarz(
+    embedding: torch.Tensor,
+    wzorce: dict[str, dict],
+    korekta_progu: float = 0.0,
+) -> tuple[str, float]:
+    """Zwraca tylko etykietę i podobieństwo (zgodnie z zachowaniem skryptu 04).
+
+    Pełny ranking kandydatów udostępnia `ocen_kandydatow`; ta funkcja jest
+    cienkim opakowaniem, dzięki czemu starsze wywołania nie muszą się zmieniać.
+    """
+    etykieta, podobienstwo, _ = ocen_kandydatow(embedding, wzorce, korekta_progu)
+    return etykieta, podobienstwo
 
 
 def przygotuj_obrazy_kamery(
@@ -171,11 +203,18 @@ def analizuj_klatke(
     urzadzenie: torch.device,
     korekta_progu: float = 0.0,
     emocje: RozpoznawaczEmocji | None = None,
-) -> list[tuple[WykrytaTwarz, str, float, str, float]]:
+    z_kandydatami: bool = False,
+) -> list[tuple]:
     """Analizuje jedną klatkę: detekcja, embeddingi, dopasowanie do wzorców.
 
-    Zwraca listę krotek (twarz, osoba, podobieństwo, emocja, pewność_emocji).
-    Emocje są opcjonalne - bez modelu zwracamy pustą etykietę i 0.0.
+    Domyślnie zwraca listę krotek
+    (twarz, osoba, podobieństwo, emocja, pewność_emocji) - dokładnie tak jak
+    wcześniej, więc skrypt 04 nie wymaga żadnych zmian.
+
+    Gdy `z_kandydatami=True`, zamiast tego zwraca krotki o jeden element
+    dłuższe: (twarz, osoba, podobieństwo, emocja, pewność_emocji, kandydaci).
+    Z tego trybu korzysta panel GUI, żeby pokazać TOP-3 kandydatów. Emocje są
+    opcjonalne - bez modelu zwracamy pustą etykietę i 0.0.
     """
     tensory_wejsciowe: list[torch.Tensor] = []
     twarze: list[WykrytaTwarz] = []
@@ -207,9 +246,19 @@ def analizuj_klatke(
     wyniki = []
     for indeks, twarz in enumerate(twarze):
         zakres = slice(indeks * liczba_kadrow, (indeks + 1) * liczba_kadrow)
-        etykieta, podobienstwo = rozpoznaj_twarz(
-            embeddingi[zakres], wzorce, korekta_progu
-        )
+        if z_kandydatami:
+            etykieta, podobienstwo, kandydaci = ocen_kandydatow(
+                embeddingi[zakres], wzorce, korekta_progu
+            )
+        else:
+            etykieta, podobienstwo = rozpoznaj_twarz(
+                embeddingi[zakres], wzorce, korekta_progu
+            )
         emocja, pewnosc_emocji = wyniki_emocji[indeks]
-        wyniki.append((twarz, etykieta, podobienstwo, emocja, pewnosc_emocji))
+        if z_kandydatami:
+            wyniki.append(
+                (twarz, etykieta, podobienstwo, emocja, pewnosc_emocji, kandydaci)
+            )
+        else:
+            wyniki.append((twarz, etykieta, podobienstwo, emocja, pewnosc_emocji))
     return wyniki

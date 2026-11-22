@@ -20,6 +20,7 @@ w czasie rzeczywistym.
 8. [Pomysły na rozszerzenie projektu (zadania dla uczniów)](#pomysły-na-rozszerzenie-projektu-zadania-dla-uczniów)
 9. [Ekran z kawałami sterowany gestem (05_ekran_z_kawalami.py)](#ekran-z-kawałami-sterowany-gestem-05_ekran_z_kawalami-py)
 10. [Usuwanie danych osób po zakończeniu](#usuwanie-danych-osób-po-zakończeniu)
+11. [Krok 5 — ewaluacja modelu](#krok-5--ewaluacja-modelu)
 
 ## Jak to działa (teoria dla uczniów)
 
@@ -125,6 +126,7 @@ rozpoznawanie twarzy/
 ├── 04_rozpoznawanie_na_zywo.py  # krok 4: rozpoznawanie na żywo z kamery
 ├── 05_ekran_z_kawalami.py       # pomocniczy: ekran z kawałami sterowany gestem (MediaPipe)
 ├── 06_usun_dane_osoby.py        # pomocniczy: usuwa zdjęcia i wzorce wybranych osób
+├── 07_ewaluacja.py              # krok 7: metryki, macierz pomyłek, porównanie metod
 ├── listuj_kamery.py             # pomocniczy: wypisuje dostępne kamery i ich rozdzielczości
 ├── pobierz_zdjecia_nieznajomych.py  # pomocniczy: pobiera zdjecia "obcych" osob do kalibracji progu
 ├── Uruchom panel.bat            # dwuklik: uruchamia panel GUI (szuka Pythona z .venv)
@@ -145,6 +147,7 @@ rozpoznawanie twarzy/
 │   ├── camera_stream.py         # wątek kamery: detekcja, rozpoznawanie i zbieranie zdjęć
 │   ├── rozpoznawanie.py         # silnik modelu dla panelu (wczytywanie, przeładowanie wzorców)
 │   ├── trening.py               # uruchamianie 02 + 03 z paskiem postępu i logiem
+│   ├── ewaluacja.py             # uruchamianie 07 z paskiem postępu i logiem
 │   ├── tkinter_app.py           # awaryjne GUI w Tkinterze
 │   ├── templates/index.html     # widok panelu
 │   ├── static/                  # Bootstrap 5 (lokalnie), własny CSS i JS
@@ -158,7 +161,8 @@ rozpoznawanie twarzy/
 │   └── processed/{train,val}/   # dane po podziale, gotowe do treningu
 ├── models/
 │   ├── wzorce_osob.json         # wzorce zdjec tozsamosci + skalibrowane progi
-│   └── kalibracja_progu.png     # wykres pomagajacy zrozumiec dobor progu
+│   ├── kalibracja_progu.png     # wykres pomagajacy zrozumiec dobor progu
+│   └── ewaluacja/               # raport.json, wykresy/*.png, pomylki/*.jpg (po 07)
 ├── requirements.txt
 └── README.md
 ```
@@ -296,7 +300,9 @@ Panel prowadzi cały proces:
 - **Rozpoznawanie** — po wczytaniu `models/wzorce_osob.json` pokazuje imię
   i podobieństwo; model wczytuje się w tle, a po treningu przeładowuje się
   bez restartu panelu. Suwak „korekta progu” działa jak `--korekta-progu`
-  w `04_rozpoznawanie_na_zywo.py`.
+  w `04_rozpoznawanie_na_zywo.py`. Karta **Wynik rozpoznawania** pokazuje
+  TOP-3 kandydatów: pasek podobieństwa każdej osoby i pionowy znacznik progu
+  decyzyjnego, dzięki czemu widać, jak blisko progu byli pozostali.
 - **Dodaj twarz** — wpisujesz nazwę osoby i cel (np. 300 zdjęć), a panel
   zapisuje wycięte twarze 224×224 do `data/raw/<osoba>/` co ok. 0,3 s —
   dokładnie tak jak `01_zbieranie_danych.py` w trybie automatycznym.
@@ -304,6 +310,10 @@ Panel prowadzi cały proces:
   `03_trenowanie_modelu.py --postep` w osobnym procesie; czyta maszynowe
   linie postępu (`[postep-start]`, `[postep]`), pokazuje pasek, etap i log.
   Trening można przerwać przyciskiem „Przerwij”.
+- **Ewaluacja** — uruchamia `07_ewaluacja.py --postep` w osobnym procesie
+  i pokazuje raport: accuracy, FAR/FRR, EER, AUC, metryki na osobę,
+  porównanie metod, wykresy PNG i galerię pomyłek. Szczegóły w sekcji
+  [Krok 5 — ewaluacja modelu](#krok-5--ewaluacja-modelu).
 - **Baza twarzy** — miniatury, liczba zdjęć i usuwanie osoby (opcjonalnie z
   ponownym treningiem). Usunięcie ostatniej osoby czyści wzorce.
 
@@ -324,7 +334,7 @@ lit. f); patrz uwagi o prywatności wyżej.
 ## Tutorial krok po kroku
 
 > Ten sam proces możesz przejść w panelu **Dodaj twarz → Trening →
-> Rozpoznawanie** (patrz sekcja [Panel GUI](#5-panel-gui-opcjonalnie-ale-wygodnie)).
+> Ewaluacja → Rozpoznawanie** (patrz sekcja [Panel GUI](#5-panel-gui-opcjonalnie-ale-wygodnie)).
 > Poniższe kroki pokazują, co dokładnie dzieje się pod spodem — warto je
 > przejść przynajmniej raz z konsoli, żeby zobaczyć surowe komunikaty.
 
@@ -433,6 +443,81 @@ Otworzy się podgląd z kamery z ramkami i etykietami rozpoznanych osób wraz
 z procentowym podobieństwem. `--korekta-progu` pozwala szybko zaostrzyć
 (wartość dodatnia) lub złagodzić (wartość ujemna) rozpoznawanie bez
 ponownego uruchamiania kroku 3. Naciśnij `q`, aby zakończyć.
+
+### Krok 5 — ewaluacja modelu
+
+Skrypt `07_ewaluacja.py` odpowiada na pytanie **„jak dobrze działa model
+i gdzie się myli?”** — zamiast tylko „czy działa”. Uruchom po treningu:
+
+```powershell
+python 07_ewaluacja.py
+```
+
+Skrypt liczy embeddingi zbioru walidacyjnego (`data/processed/val`) oraz
+zdjęć obcych osób z `data/raw/nieznajomy` i wyznacza:
+
+- **accuracy** — odsetek znanych twarzy rozpoznanych poprawnie,
+- **precision / recall / F1** dla każdej osoby (czy model nie myli jej
+  z innymi i czy jej nie odrzuca),
+- **macierz pomyłek** — tabelę „kogo z kim myli” (wiersze = prawda,
+  kolumny = decyzja modelu),
+- **FAR** (*False Acceptance Rate*) — odsetek obcych zaakceptowanych jako
+  znana osoba. W szkole to najważniejszy błąd: system wpuszcza kogoś, kogo
+  nie powinien,
+- **FRR** (*False Rejection Rate*) — odsetek znanych osób odrzuconych jako
+  „Nieznana osoba”,
+- **EER** — punkt, w którym FAR = FRR; jedna liczba do porównywania metod,
+- **AUC** — jak dobrze sam ranking podobieństw rozdziela swoich od obcych
+  (1,0 = idealnie, 0,5 = losowo).
+
+Na koniec porównuje trzy metody na **tych samych embeddingach**:
+prototypy z pliku wzorców (tak jak `04`), **k-NN** oraz **regresję
+logistyczną** z `scikit-learn`. To dobra lekcja: te same cechy i różne
+sposoby podejmowania decyzji dają różne wyniki — deep learning nie zawsze
+jest ostatnim słowem.
+
+Wyniki trafiają do:
+
+```
+models/ewaluacja/raport_ewaluacji.json   # wszystkie liczby i ostrzeżenia
+models/ewaluacja/wykresy/*.png           # macierz, rozkład, FAR/FRR, PCA, porównanie
+models/ewaluacja/pomylki/*.jpg           # galeria najciekawszych błędów
+```
+
+Opcje przydatne na lekcji: `--k-sasiadow 7` (inne `k` w k-NN),
+`--maks-pomylek 12` (ile zdjęć zapisać do galerii; `0` = nie zapisuj) oraz
+`--postep` (maszynowe linie postępu dla panelu GUI).
+
+> **Uwaga metodologiczna — bardzo ważna.** Zbiór walidacyjny był już użyty
+> w kroku 3 do **kalibracji progów**, a próg dla k-NN i regresji
+> logistycznej jest wybierany na tym samym zbiorze (punkt EER). Wyniki są
+> więc **optymistyczne**. Do rzetelnej oceny potrzebny jest osobny zbiór
+> **testowy**, którego nie użyto ani do treningu, ani do kalibracji.
+> Ostrzeżenia są zapisane w raporcie JSON i pokazane w panelu — nie
+> ukrywamy tego przed uczniami.
+>
+> Zdjęcia obcych pochodzą z `data/raw/nieznajomy`; część z nich mogła
+> wcześniej trafić do walidacji, dlatego FAR też jest zaniżony
+> w optymistyczną stronę. Przy tłumaczeniu wyników warto to podkreślić:
+> **dobre wyniki na danych, które model „widział”, nie gwarantują dobrego
+> działania na nowych osobach.**
+
+### Jak czytać wykresy z ewaluacji
+
+- **Rozkład podobieństw** — niebieski słupek po prawej to znane twarze,
+  pomarańczowy po lewej to obcy. Im mniejsze nachodzenie na siebie, tym
+  łatwiej dobrać próg.
+- **Kompromis FAR / FRR** — przesuwając próg w prawo, rzadziej wpuszczamy
+  obcych (FAR spada), ale częściej odrzucamy swoich (FRR rośnie).
+  Czerwona i niebieska linia przecinają się w punkcie EER.
+- **Macierz pomyłek** — duże liczby na przekątnej to trafienia; wszystko
+  poza przekątną to błędy. Kolumna „Nieznana osoba” pokazuje, ile twarzy
+  danej osoby model odrzucił.
+- **PCA** — rzutowanie embeddingów na 2 wymiary. Jeśli klastry osób są
+  rozdzielone, model dobrze opisuje różnice między ludźmi; punkty obcych
+  powinny leżeć poza klastrami.
+- **Porównanie metod** — accuracy (zamknięta, bez opcji „nieznana”)
+  i EER dla prototypów, k-NN i regresji logistycznej.
 
 ## Jak przygotować dobre materiały treningowe
 
@@ -582,8 +667,11 @@ Ten projekt naprawia to automatycznie (`common/camera.py` wywołuje
   CSV/bazy danych — np. jako prosty system obecności na zajęciach.
 - Poeksperymentować z inną architekturą backbone'u (np.
   `resnet18`, `efficientnet_b0`) i porównać dokładność/szybkość.
-- Dodać wizualizację macierzy pomyłek (confusion matrix) na zbiorze
-  walidacyjnym za pomocą `scikit-learn`.
+- Dodać **osobny zbiór testowy** (np. zdjęcia z innego dnia niż trening)
+  i sprawdzić, o ile wyniki spadną względem optymistycznej ewaluacji na
+  `val`. To najważniejsze ćwiczenie z metodologii eksperymentu.
+- Zbadać wpływ progu decyzyjnego na FAR/FRR w praktyce: przy jakim progu
+  system wpuszcza obcych, a przy jakim odmawia dostępu własnym osobom?
 - Zmierzyć wpływ liczby zdjęć treningowych na dokładność (np. wytrenować
   model na 50, 100, 200 zdjęciach na osobę i porównać wyniki).
 
