@@ -21,6 +21,7 @@ w czasie rzeczywistym.
 9. [Ekran z kawałami sterowany gestem (05_ekran_z_kawalami.py)](#ekran-z-kawałami-sterowany-gestem-05_ekran_z_kawalami-py)
 10. [Usuwanie danych osób po zakończeniu](#usuwanie-danych-osób-po-zakończeniu)
 11. [Krok 5 — ewaluacja modelu](#krok-5--ewaluacja-modelu)
+12. [Krok 6 — eksperymenty](#krok-6--eksperymenty)
 
 ## Jak to działa (teoria dla uczniów)
 
@@ -127,16 +128,19 @@ rozpoznawanie twarzy/
 ├── 05_ekran_z_kawalami.py       # pomocniczy: ekran z kawałami sterowany gestem (MediaPipe)
 ├── 06_usun_dane_osoby.py        # pomocniczy: usuwa zdjęcia i wzorce wybranych osób
 ├── 07_ewaluacja.py              # krok 7: metryki, macierz pomyłek, porównanie metod
+├── 08_eksperymenty.py           # krok 8: wpływ liczby zdjęć, jasności, k w k-NN i progu
 ├── listuj_kamery.py             # pomocniczy: wypisuje dostępne kamery i ich rozdzielczości
 ├── pobierz_zdjecia_nieznajomych.py  # pomocniczy: pobiera zdjecia "obcych" osob do kalibracji progu
 ├── Uruchom panel.bat            # dwuklik: uruchamia panel GUI (szuka Pythona z .venv)
 ├── common/
 │   ├── camera.py                # obsługa kamery (wybór, otwieranie, wymuszenie MJPG/4K)
 │   ├── dane_osob.py             # lista osób, numeracja zdjęć, bezpieczny odczyt JSON
+│   ├── embeddingi.py            # wspólne liczenie embeddingów (07, 08 i GUI)
 │   ├── emotions.py              # rozpoznawanie emocji (FER+)
 │   ├── face_detector.py         # detekcja twarzy (YuNet z modele/, zapas: kaskada Haara)
 │   ├── gesture.py               # wykrywanie gestu "ręka nad głową" (MediaPipe Pose)
 │   ├── imgio.py                 # zapis/odczyt zdjęć odporny na polskie znaki w ścieżce
+│   ├── metryki.py               # wspólne metryki: FAR/FRR/EER/AUC, k-NN, prototypy
 │   ├── modele/                  # modele ONNX/task (YuNet, FER+, MediaPipe Pose; poza Git)
 │   ├── model.py                 # definicja modelu (ekstraktor cech / embeddingi)
 │   ├── rozpoznawanie.py         # wspólna logika: wzorce, dopasowanie, emocje (04 + GUI)
@@ -148,6 +152,7 @@ rozpoznawanie twarzy/
 │   ├── rozpoznawanie.py         # silnik modelu dla panelu (wczytywanie, przeładowanie wzorców)
 │   ├── trening.py               # uruchamianie 02 + 03 z paskiem postępu i logiem
 │   ├── ewaluacja.py             # uruchamianie 07 z paskiem postępu i logiem
+│   ├── eksperymenty.py          # uruchamianie 08 z paskiem postępu i logiem
 │   ├── tkinter_app.py           # awaryjne GUI w Tkinterze
 │   ├── templates/index.html     # widok panelu
 │   ├── static/                  # Bootstrap 5 (lokalnie), własny CSS i JS
@@ -162,7 +167,8 @@ rozpoznawanie twarzy/
 ├── models/
 │   ├── wzorce_osob.json         # wzorce zdjec tozsamosci + skalibrowane progi
 │   ├── kalibracja_progu.png     # wykres pomagajacy zrozumiec dobor progu
-│   └── ewaluacja/               # raport.json, wykresy/*.png, pomylki/*.jpg (po 07)
+│   ├── ewaluacja/               # raport.json, wykresy/*.png, pomylki/*.jpg (po 07)
+│   └── eksperymenty/            # raport_eksperymentow.json, wyniki.csv, wykresy/*.png (po 08)
 ├── requirements.txt
 └── README.md
 ```
@@ -314,6 +320,10 @@ Panel prowadzi cały proces:
   i pokazuje raport: accuracy, FAR/FRR, EER, AUC, metryki na osobę,
   porównanie metod, wykresy PNG i galerię pomyłek. Szczegóły w sekcji
   [Krok 5 — ewaluacja modelu](#krok-5--ewaluacja-modelu).
+- **Eksperymenty** — uruchamia `08_eksperymenty.py --postep` i pokazuje
+  wpływ liczby zdjęć, jasności, `k` w k-NN i progu decyzyjnego: tabelę
+  wyników, wykresy i automatyczne wnioski. Szczegóły w sekcji
+  [Krok 6 — eksperymenty](#krok-6--eksperymenty).
 - **Baza twarzy** — miniatury, liczba zdjęć i usuwanie osoby (opcjonalnie z
   ponownym treningiem). Usunięcie ostatniej osoby czyści wzorce.
 
@@ -334,7 +344,7 @@ lit. f); patrz uwagi o prywatności wyżej.
 ## Tutorial krok po kroku
 
 > Ten sam proces możesz przejść w panelu **Dodaj twarz → Trening →
-> Ewaluacja → Rozpoznawanie** (patrz sekcja [Panel GUI](#5-panel-gui-opcjonalnie-ale-wygodnie)).
+> Ewaluacja → Eksperymenty → Rozpoznawanie** (patrz sekcja [Panel GUI](#5-panel-gui-opcjonalnie-ale-wygodnie)).
 > Poniższe kroki pokazują, co dokładnie dzieje się pod spodem — warto je
 > przejść przynajmniej raz z konsoli, żeby zobaczyć surowe komunikaty.
 
@@ -518,6 +528,103 @@ Opcje przydatne na lekcji: `--k-sasiadow 7` (inne `k` w k-NN),
   powinny leżeć poza klastrami.
 - **Porównanie metod** — accuracy (zamknięta, bez opcji „nieznana”)
   i EER dla prototypów, k-NN i regresji logistycznej.
+
+### Krok 6 — eksperymenty
+
+Skrypt `08_eksperymenty.py` zadaje pytanie, które jest sednem nauki:
+**co się stanie, jeśli zmienimy jedną rzecz?** Zmieniamy tylko jeden
+parametr, resztę zostawiamy bez zmian, mierzymy wynik i porównujemy.
+Jeśli zmienimy wszystko naraz, nie będziemy wiedzieć, co naprawdę
+wpłynęło na wynik.
+
+```powershell
+python 08_eksperymenty.py
+```
+
+Skrypt przeprowadza cztery eksperymenty:
+
+1. **Liczba zdjęć** — 50, 100, 200 lub wszystkie zdjęcia na osobę.
+   Pytanie: czy więcej danych zawsze oznacza lepszy model?
+2. **Jasność** — tylko oryginalne zdjęcia vs trzy warianty jasności
+   (0,65 / 1,0 / 1,4), tak jak w treningu `03`.
+   Pytanie: czy augmentacja jasności naprawdę pomaga?
+3. **`k` w k-NN** — 1, 3, 5, 9 i 15 sąsiadów.
+   Pytanie: czy patrzeć tylko na najbliższe zdjęcie, czy na kilka
+   i uśredniać decyzję?
+4. **Próg decyzyjny** — od 0,50 do 0,95 co 0,05.
+   Pytanie: gdzie jest granica między „wpuszczam swoich” a „nie wpuszczam
+   obcych”?
+
+Dla każdego wariantu liczone są te same metryki co w kroku 5: accuracy
+zamknięta (kogo-kim, bez odrzucania), accuracy otwarta (z opcją
+„nieznana osoba”), FAR, FRR, EER i AUC. Próg dla każdego wariantu jest
+wybierany w punkcie EER, żeby porównywać metody przy podobnym kompromisie
+błędów.
+
+Przykładowe wyniki na danych projektu (3 osoby, 700 zdjęć treningowych,
+175 zdjęć walidacyjnych znanych osób i 150 obcych, ok. 82 s na GPU):
+
+| Eksperyment | Wariant | Acc. zamk. | EER |
+| --- | --- | --- | --- |
+| Liczba zdjęć | 50 | 100,0% | 0,6% |
+| Liczba zdjęć | 100 | 100,0% | 0,3% |
+| Liczba zdjęć | 200 / wszystkie | 100,0% | 0,6% |
+| Jasność | tylko oryginał | 100,0% | 0,6% |
+| Jasność | 3 warianty | 100,0% | 0,6% |
+| k-NN | k = 1 / 3 | 100,0% | 0,0% |
+| k-NN | k = 5 / 9 / 15 | 100,0% | 0,6% |
+| Próg 0,50 | — | — | FAR 100%, FRR 0% |
+| Próg 0,85–0,90 | — | 99,4% | FAR 0%, FRR 0,6% |
+| Próg 0,95 | — | 92,6% | FAR 0%, FRR 7,4% |
+
+Na tych danych accuracy zamknięta jest **sufitowa** (100% w każdym
+wariancie), więc różnice widać dopiero w EER i w tabeli progów. To też
+jest lekcja: przy łatwym zbiorze trzeba patrzeć na trudniejsze miary,
+a nie tylko na jedną „ładną” liczbę.
+
+Dwa efekty warte omówienia z klasą:
+
+- **Sufit danych.** Skrypt `03` ogranicza liczbę prototypów do 128 na
+  wariant jasności. Dlatego warianty „200” i „wszystkie” mają tyle samo
+  prototypów (1152) i dają identyczny wynik — dodatkowe zdjęcia nie
+  zmieniają decyzji, dopóki nie podniesiemy tego limitu. „Więcej danych”
+  działa tylko do granicy ustawionej przez projekt modelu.
+- **Próg to wybór, nie prawda.** Przy progu 0,50 model wpuszcza prawie
+  wszystkich obcych (FAR 100%). Przy 0,85–0,90 nie wpuszcza żadnego
+  obcego, ale odrzuca 0,6% swoich. Przy 0,95 odrzuca już 7,4% swoich.
+  Nie ma progu idealnego — wybór zależy od tego, co w danym zastosowaniu
+  jest gorsze.
+
+Wyniki trafiają do:
+
+```
+models/eksperymenty/raport_eksperymentow.json  # wszystkie liczby, wnioski, ostrzeżenia
+models/eksperymenty/wyniki.csv                 # tabela do Excela (separator ";")
+models/eksperymenty/wykresy/*.png              # cztery wykresy opisane niżej
+```
+
+Opcje: `--batch-size 16` (ile zdjęć naraz trafia do sieci), `--seed 42`
+(powtarzalność) oraz `--postep` (maszynowe linie postępu dla panelu GUI).
+
+### Jak czytać wykresy z eksperymentów
+
+- **Wpływ liczby zdjęć** — trzy linie: accuracy zamknięta, accuracy
+  otwarta i EER (im niżej, tym lepiej). Płaska linia przy 200 i
+  „wszystkie” to właśnie efekt limitu prototypów.
+- **Wpływ jasności** — słupki obok siebie dla samego oryginału i dla
+  trzech wariantów. Jeśli słupki są prawie równe, augmentacja nie wniosła
+  wiele *na tym zbiorze* — nie znaczy to, że nigdy nie pomaga.
+- **Wpływ `k` w k-NN** — małe `k` jest czułe na pojedyncze zdjęcie
+  (szum), duże `k` wygładza decyzję, ale może mieszać osoby podobne.
+- **Próg decyzyjny** — trzy linie: accuracy otwarta, FAR i FRR.
+  Widać, gdzie FAR spada do zera i ile kosztuje to w FRR.
+
+> **Uwaga metodologiczna.** Podobnie jak w kroku 5, próg EER jest
+> wybierany na tym samym zbiorze walidacyjnym, na którym liczymy metryki.
+> Wyniki są więc **optymistyczne** i pokazują *zależności*, a nie
+> ostateczną jakość modelu. W prawdziwym projekcie próg ustawia się na
+> jednym zbiorze, a raportuje na innym, nowym zbiorze testowym.
+> Ostrzeżenia są zapisane w raporcie JSON i pokazane w panelu.
 
 ## Jak przygotować dobre materiały treningowe
 

@@ -65,7 +65,6 @@ przelacz_na_venv_jesli_trzeba()
 
 import argparse
 import json
-import math
 import re
 import shutil
 import time
@@ -74,17 +73,25 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image
-from torch.utils.data import DataLoader, Dataset
-from torchvision import datasets, transforms
 
-from common.model import (
-    oblicz_znormalizowane_cechy,
-    pobierz_urzadzenie,
-    policz_podobienstwa_wzorca,
-    przygotuj_przeksztalcenie,
-    zbuduj_ekstraktor_cech,
+from common.embeddingi import (
+    WSPOLCZYNNIKI_JASNOSCI,
+    policz_embeddingi_folderu,
+    policz_embeddingi_plaskie,
+    policz_obrazy,
+    transformacja,
 )
+from common.metryki import (
+    accuracy_zamknieta,
+    auc,
+    decyzje_prototypy,
+    decyzje_z_progiem,
+    krzywa_i_eer,
+    metryki_openset,
+    podobienstwa_do_osob,
+    podobienstwa_knn,
+)
+from common.model import pobierz_urzadzenie, zbuduj_ekstraktor_cech
 from common.rozpoznawanie import NAZWA_NIEZNANEJ, wczytaj_wzorce
 
 KORZEN_PROJEKTU = Path(__file__).resolve().parent
@@ -99,8 +106,6 @@ PLIK_RAPORTU = FOLDER_EWALUACJI / "raport_ewaluacji.json"
 
 NAZWA_KLASY_NIEZNAJOMY = "nieznajomy"
 NAZWA_OBCEGO = "obcy (nieznajomy)"
-WSPOLCZYNNIKI_JASNOSCI = (0.65, 1.0, 1.4)
-ROZSZERZENIA_OBRAZOW = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 WERSJA_RAPORTU = 1
 
 
@@ -152,211 +157,8 @@ def parsuj_argumenty() -> argparse.Namespace:
 
 
 # =========================================================================
-# Wczytywanie zdjec i liczenie embeddingow
-# =========================================================================
-def policz_obrazy(folder: Path) -> int:
-    """Liczy pliki-obrazki w folderze (do mianownika paska postepu)."""
-    if not folder.exists():
-        return 0
-    return sum(
-        1
-        for plik in folder.rglob("*")
-        if plik.is_file() and plik.suffix.lower() in ROZSZERZENIA_OBRAZOW
-    )
-
-
-class ZbiorPlikow(Dataset):
-    """Prosty zbior zdjec z jednego, plaskiego folderu (np. data/raw/nieznajomy).
-
-    ImageFolder wymaga podfolderow-klas. Tutaj wszystkie zdjecia to jedna
-    klasa "obcy", wiec wystarczy lista plikow.
-    """
-
-    def __init__(self, pliki: list[Path], transform) -> None:
-        self.pliki = pliki
-        self.transform = transform
-
-    def __len__(self) -> int:
-        return len(self.pliki)
-
-    def __getitem__(self, indeks: int):
-        with Image.open(self.pliki[indeks]) as obraz:
-            obraz = obraz.convert("RGB")
-            return self.transform(obraz), 0
-
-
-def _transformacja(jasnosc: float = 1.0) -> transforms.Compose:
-    """Dokladnie ten sam sposob przygotowania obrazu co w skrypcie 03."""
-    kroki = []
-    if jasnosc != 1.0:
-        kroki.append(transforms.ColorJitter(brightness=(jasnosc, jasnosc)))
-    kroki.append(przygotuj_przeksztalcenie())
-    return transforms.Compose(kroki)
-
-
-def _ladowarka(zbior: Dataset, rozmiar_batcha: int) -> DataLoader:
-    return DataLoader(
-        zbior,
-        batch_size=rozmiar_batcha,
-        shuffle=False,
-        num_workers=2 if len(zbior) > 50 else 0,
-    )
-
-
-def policz_embeddingi_folderu(
-    ekstraktor: torch.nn.Module,
-    folder: Path,
-    urzadzenie: torch.device,
-    rozmiar_batcha: int,
-    transform,
-    postep: Postep,
-) -> tuple[torch.Tensor, list[int], list[str], list[Path]]:
-    """Liczy embeddingi zdjec z folderu z podfolderami-klasami (train/val).
-
-    Zwraca: macierz [N, D], etykiety liczbowe, nazwy klas i sciezki plikow
-    w tej samej kolejnosci co wiersze macierzy.
-    """
-    zbior = datasets.ImageFolder(folder, transform=transform)
-    if len(zbior) == 0:
-        raise SystemExit(f"Brak zdjec w {folder}.")
-
-    ladowarka = _ladowarka(zbior, rozmiar_batcha)
-    embeddingi: list[torch.Tensor] = []
-    etykiety: list[int] = []
-    for obrazy, etykiety_batch in ladowarka:
-        embeddingi.append(
-            oblicz_znormalizowane_cechy(ekstraktor, obrazy.to(urzadzenie)).cpu()
-        )
-        etykiety.extend(etykiety_batch.tolist())
-        postep.dodaj(obrazy.shape[0])
-
-    return (
-        torch.cat(embeddingi, dim=0),
-        etykiety,
-        list(zbior.classes),
-        [Path(plik) for plik, _ in zbior.samples],
-    )
-
-
-def policz_embeddingi_plaskie(
-    ekstraktor: torch.nn.Module,
-    folder: Path,
-    urzadzenie: torch.device,
-    rozmiar_batcha: int,
-    transform,
-    postep: Postep,
-) -> tuple[torch.Tensor, list[Path]]:
-    """Liczy embeddingi wszystkich zdjec z plaskiego folderu (bez podfolderow)."""
-    pliki = sorted(
-        plik
-        for plik in folder.iterdir()
-        if plik.is_file() and plik.suffix.lower() in ROZSZERZENIA_OBRAZOW
-    )
-    if not pliki:
-        return torch.empty((0, 0)), []
-
-    zbior = ZbiorPlikow(pliki, transform)
-    ladowarka = _ladowarka(zbior, rozmiar_batcha)
-    embeddingi: list[torch.Tensor] = []
-    for obrazy, _ in ladowarka:
-        embeddingi.append(
-            oblicz_znormalizowane_cechy(ekstraktor, obrazy.to(urzadzenie)).cpu()
-        )
-        postep.dodaj(obrazy.shape[0])
-    return torch.cat(embeddingi, dim=0), pliki
-
-
-# =========================================================================
 # Metryki
 # =========================================================================
-def _podobienstwa_do_osob(
-    embeddingi: torch.Tensor, wzorce: dict[str, dict], osoby: list[str]
-) -> np.ndarray:
-    """Macierz [liczba_zdjec, liczba_osob] - podobienstwo do najlepszego prototypu."""
-    if len(embeddingi) == 0:
-        return np.zeros((0, len(osoby)), dtype=float)
-    kolumny = [
-        policz_podobienstwa_wzorca(embeddingi, wzorce[osoba]["prototypy"]).numpy()
-        for osoba in osoby
-    ]
-    return np.stack(kolumny, axis=1)
-
-
-def _decyzje_prototypy(
-    podobienstwa: np.ndarray, osoby: list[str], progi: dict[str, float]
-) -> tuple[list[str], np.ndarray]:
-    """Decyzja dokladnie taka jak w 04: najpierw wlasny prog, potem max."""
-    etykiety: list[str] = []
-    wyniki = np.zeros(len(podobienstwa), dtype=float)
-    for indeks, wiersz in enumerate(podobienstwa):
-        najlepsza = NAZWA_NIEZNANEJ
-        najlepsze = -1.0
-        for numer, osoba in enumerate(osoby):
-            if wiersz[numer] >= progi[osoba] and wiersz[numer] > najlepsze:
-                najlepsza = osoba
-                najlepsze = float(wiersz[numer])
-        etykiety.append(najlepsza)
-        wyniki[indeks] = najlepsze if najlepsza != NAZWA_NIEZNANEJ else float(wiersz.max())
-    return etykiety, wyniki
-
-
-def _decyzje_z_progiem(
-    podobienstwa: np.ndarray, osoby: list[str], prog: float
-) -> tuple[list[str], np.ndarray]:
-    """Wspolny prog dla wszystkich osob (k-NN, regresja logistyczna)."""
-    if len(podobienstwa) == 0:
-        return [], np.zeros(0, dtype=float)
-    indeksy = podobienstwa.argmax(axis=1)
-    maksima = podobienstwa.max(axis=1)
-    etykiety = [
-        osoby[int(indeks)] if maksima[numer] >= prog else NAZWA_NIEZNANEJ
-        for numer, indeks in enumerate(indeksy)
-    ]
-    return etykiety, maksima
-
-
-def _accuracy_zamknieta(
-    podobienstwa: np.ndarray, indeksy_prawdziwe: list[int]
-) -> float:
-    """Dokladnosc, gdy NIE ma opcji "nieznana" - czyste kogo-kim."""
-    if len(podobienstwa) == 0:
-        return 0.0
-    trafienia = sum(
-        int(podobienstwa[numer].argmax()) == prawdziwy
-        for numer, prawdziwy in enumerate(indeksy_prawdziwe)
-    )
-    return trafienia / len(podobienstwa)
-
-
-def _metryki_openset(
-    prawdziwe_znane: list[str],
-    przewidziane_znane: list[str],
-    przewidziane_obce: list[str],
-) -> dict:
-    """Accuracy, FAR i FRR dla wybranego progu decyzyjnego."""
-    liczba_znanych = len(prawdziwe_znane)
-    poprawne = sum(
-        prawdziwa == przewidziana
-        for prawdziwa, przewidziana in zip(prawdziwe_znane, przewidziane_znane)
-    )
-    odrzucone = sum(przewidziana == NAZWA_NIEZNANEJ for przewidziana in przewidziane_znane)
-    zaakceptowani_obcy = sum(
-        przewidziana != NAZWA_NIEZNANEJ for przewidziana in przewidziane_obce
-    )
-    return {
-        "accuracy": round(poprawne / liczba_znanych, 4) if liczba_znanych else 0.0,
-        "poprawne": poprawne,
-        "liczba_znanych": liczba_znanych,
-        "far": round(zaakceptowani_obcy / len(przewidziane_obce), 4)
-        if przewidziane_obce
-        else None,
-        "zaakceptowani_obcy": zaakceptowani_obcy,
-        "liczba_obcych": len(przewidziane_obce),
-        "frr": round(odrzucone / liczba_znanych, 4) if liczba_znanych else 0.0,
-        "odrzucone_znane": odrzucone,
-    }
-
-
 def _metryki_na_osobe(
     prawdziwe: list[str], przewidziane: list[str], osoby: list[str]
 ) -> dict:
@@ -390,57 +192,6 @@ def _metryki_na_osobe(
     return wynik
 
 
-def _krzywa_i_eer(
-    wlasne: np.ndarray, obce: np.ndarray, liczba_progow: int = 201
-) -> dict | None:
-    """Liczy FAR/FRR dla wielu progow i znajduje EER (FAR = FRR)."""
-    if len(wlasne) == 0 or len(obce) == 0:
-        return None
-
-    progi = np.linspace(0.0, 1.0, liczba_progow)
-    far = np.array([float(np.mean(obce >= prog)) for prog in progi])
-    frr = np.array([float(np.mean(wlasne < prog)) for prog in progi])
-    indeks = int(np.argmin(np.abs(far - frr)))
-    return {
-        "prog": round(float(progi[indeks]), 4),
-        "eer": round(float((far[indeks] + frr[indeks]) / 2), 4),
-        "progi": [round(float(x), 4) for x in progi],
-        "far": [round(float(x), 4) for x in far],
-        "frr": [round(float(x), 4) for x in frr],
-    }
-
-
-def _auc(wlasne: np.ndarray, obce: np.ndarray) -> float | None:
-    """AUC policzone z rang - bez dodatkowych bibliotek i z obsluga remisow."""
-    if len(wlasne) == 0 or len(obce) == 0:
-        return None
-
-    oceny = np.concatenate([wlasne, obce])
-    etykiety = np.concatenate(
-        [np.ones(len(wlasne), dtype=int), np.zeros(len(obce), dtype=int)]
-    )
-    kolejnosc = np.argsort(oceny, kind="mergesort")
-    posortowane = oceny[kolejnosc]
-    rangi = np.empty(len(oceny), dtype=float)
-
-    poczatek = 0
-    while poczatek < len(oceny):
-        koniec = poczatek
-        while koniec + 1 < len(oceny) and posortowane[koniec + 1] == posortowane[poczatek]:
-            koniec += 1
-        ranga = (poczatek + 1 + koniec + 1) / 2
-        rangi[kolejnosc[poczatek : koniec + 1]] = ranga
-        poczatek = koniec + 1
-
-    liczba_pozytywnych = int(etykiety.sum())
-    liczba_negatywnych = len(etykiety) - liczba_pozytywnych
-    suma_rang = float(rangi[etykiety == 1].sum())
-    auc = (
-        suma_rang - liczba_pozytywnych * (liczba_pozytywnych + 1) / 2
-    ) / (liczba_pozytywnych * liczba_negatywnych)
-    return round(float(auc), 4)
-
-
 def _macierz_pomylek(
     prawdziwe: list[str], przewidziane: list[str], osoby: list[str]
 ) -> dict:
@@ -469,35 +220,8 @@ def _histogram(wartosci: np.ndarray, zakres: tuple[float, float], bins: int = 25
 
 
 # =========================================================================
-# Porownywane metody: k-NN i regresja logistyczna
+# Porownywane metody: k-NN (ze wspolnego modulu) i regresja logistyczna
 # =========================================================================
-def _podobienstwa_knn(
-    zapytania: torch.Tensor,
-    trening: torch.Tensor,
-    etykiety_trening: list[int],
-    klasy_trening: list[str],
-    osoby: list[str],
-    k: int,
-) -> np.ndarray:
-    """Dla kazdej osoby srednia z k najblizszych jej zdjec treningowych."""
-    kolumny: list[np.ndarray] = []
-    for osoba in osoby:
-        indeks_klasy = klasy_trening.index(osoba)
-        maska = torch.tensor(
-            [etykieta == indeks_klasy for etykieta in etykiety_trening],
-            dtype=torch.bool,
-        )
-        embeddingi_osoby = trening[maska]
-        if embeddingi_osoby.shape[0] == 0:
-            kolumny.append(np.zeros(len(zapytania), dtype=float))
-            continue
-        podobienstwa = zapytania @ embeddingi_osoby.T
-        k_skuteczne = min(max(1, k), podobienstwa.shape[1])
-        najlepsze = podobienstwa.topk(k_skuteczne, dim=1).values.mean(dim=1)
-        kolumny.append(najlepsze.numpy())
-    return np.stack(kolumny, axis=1)
-
-
 def _wyniki_logistycznej(
     trening: torch.Tensor,
     etykiety_trening: list[int],
@@ -820,7 +544,7 @@ def main() -> None:
             folder_train,
             urzadzenie,
             argumenty.batch_size,
-            _transformacja(jasnosc),
+            transformacja(jasnosc),
             postep,
         )
         if not klasy_trening:
@@ -846,7 +570,7 @@ def main() -> None:
         folder_val,
         urzadzenie,
         argumenty.batch_size,
-        _transformacja(1.0),
+        transformacja(1.0),
         postep,
     )
     prawdziwe_val = [klasy_val[etykieta] for etykieta in etykiety_val]
@@ -881,7 +605,7 @@ def main() -> None:
             folder_obcych,
             urzadzenie,
             argumenty.batch_size,
-            _transformacja(1.0),
+            transformacja(1.0),
             postep,
         )
     else:
@@ -894,15 +618,15 @@ def main() -> None:
     postep.start("metryki", 4)
     print("\n[info] Metoda 1/3: prototypy (obecny model z pliku wzorcow)...")
     progi = {osoba: float(wzorce[osoba]["prog"]) for osoba in osoby}
-    podobienstwa_znane = _podobienstwa_do_osob(embeddingi_znane, wzorce, osoby)
-    podobienstwa_obce = _podobienstwa_do_osob(embeddingi_obce, wzorce, osoby)
-    przewidziane_znane_proto, _ = _decyzje_prototypy(
+    podobienstwa_znane = podobienstwa_do_osob(embeddingi_znane, wzorce, osoby)
+    podobienstwa_obce = podobienstwa_do_osob(embeddingi_obce, wzorce, osoby)
+    przewidziane_znane_proto, _ = decyzje_prototypy(
         podobienstwa_znane, osoby, progi
     )
-    przewidziane_obce_proto, _ = _decyzje_prototypy(
+    przewidziane_obce_proto, _ = decyzje_prototypy(
         podobienstwa_obce, osoby, progi
     )
-    metryki_proto = _metryki_openset(
+    metryki_proto = metryki_openset(
         prawdziwe_znane, przewidziane_znane_proto, przewidziane_obce_proto
     )
 
@@ -913,14 +637,14 @@ def main() -> None:
         if len(podobienstwa_obce)
         else np.zeros(0, dtype=float)
     )
-    krzywa_proto = _krzywa_i_eer(wlasne_proto, obce_proto)
-    auc_proto = _auc(wlasne_proto, obce_proto)
+    krzywa_proto = krzywa_i_eer(wlasne_proto, obce_proto)
+    auc_proto = auc(wlasne_proto, obce_proto)
     postep.dodaj(1)
 
     # ---------------------------------------------------------- k-NN
     print(f"[info] Metoda 2/3: k-NN (k={argumenty.k_sasiadow})...")
     zapytania = torch.cat([embeddingi_znane, embeddingi_obce], dim=0)
-    podobienstwa_knn = _podobienstwa_knn(
+    podobienstwa_knn_wszystkie = podobienstwa_knn(
         zapytania,
         embeddingi_trening,
         etykiety_trening_wszystkie,
@@ -928,26 +652,26 @@ def main() -> None:
         osoby,
         argumenty.k_sasiadow,
     )
-    podobienstwa_knn_znane = podobienstwa_knn[: len(embeddingi_znane)]
-    podobienstwa_knn_obce = podobienstwa_knn[len(embeddingi_znane) :]
+    podobienstwa_knn_znane = podobienstwa_knn_wszystkie[: len(embeddingi_znane)]
+    podobienstwa_knn_obce = podobienstwa_knn_wszystkie[len(embeddingi_znane) :]
     wlasne_knn = podobienstwa_knn_znane[indeksy, indeksy_prawdziwe]
     obce_knn = (
         podobienstwa_knn_obce.max(axis=1)
         if len(podobienstwa_knn_obce)
         else np.zeros(0, dtype=float)
     )
-    krzywa_knn = _krzywa_i_eer(wlasne_knn, obce_knn)
+    krzywa_knn = krzywa_i_eer(wlasne_knn, obce_knn)
     prog_knn = krzywa_knn["prog"] if krzywa_knn else 0.5
-    przewidziane_znane_knn, _ = _decyzje_z_progiem(
+    przewidziane_znane_knn, _ = decyzje_z_progiem(
         podobienstwa_knn_znane, osoby, prog_knn
     )
-    przewidziane_obce_knn, _ = _decyzje_z_progiem(
+    przewidziane_obce_knn, _ = decyzje_z_progiem(
         podobienstwa_knn_obce, osoby, prog_knn
     )
-    metryki_knn = _metryki_openset(
+    metryki_knn = metryki_openset(
         prawdziwe_znane, przewidziane_znane_knn, przewidziane_obce_knn
     )
-    auc_knn = _auc(wlasne_knn, obce_knn)
+    auc_knn = auc(wlasne_knn, obce_knn)
     postep.dodaj(1)
 
     # ---------------------------------------------- regresja logistyczna
@@ -969,19 +693,19 @@ def main() -> None:
             if len(podobienstwa_log_obce)
             else np.zeros(0, dtype=float)
         )
-        krzywa_log = _krzywa_i_eer(wlasne_log, obce_log)
+        krzywa_log = krzywa_i_eer(wlasne_log, obce_log)
         prog_log = krzywa_log["prog"] if krzywa_log else 0.5
-        przewidziane_znane_log, _ = _decyzje_z_progiem(
+        przewidziane_znane_log, _ = decyzje_z_progiem(
             podobienstwa_log_znane, osoby, prog_log
         )
-        przewidziane_obce_log, _ = _decyzje_z_progiem(
+        przewidziane_obce_log, _ = decyzje_z_progiem(
             podobienstwa_log_obce, osoby, prog_log
         )
-        metryki_log = _metryki_openset(
+        metryki_log = metryki_openset(
             prawdziwe_znane, przewidziane_znane_log, przewidziane_obce_log
         )
-        auc_log = _auc(wlasne_log, obce_log)
-        accuracy_log = _accuracy_zamknieta(podobienstwa_log_znane, indeksy_prawdziwe)
+        auc_log = auc(wlasne_log, obce_log)
+        accuracy_log = accuracy_zamknieta(podobienstwa_log_znane, indeksy_prawdziwe)
     else:
         krzywa_log = None
         prog_log = None
@@ -997,7 +721,7 @@ def main() -> None:
     na_osobe = _metryki_na_osobe(
         prawdziwe_wszystkie, przewidziane_wszystkie, osoby
     )
-    accuracy_zamknieta_proto = _accuracy_zamknieta(
+    accuracy_zamknieta_proto = accuracy_zamknieta(
         podobienstwa_znane, indeksy_prawdziwe
     )
 
@@ -1014,7 +738,7 @@ def main() -> None:
         {
             "metoda": f"k-NN (k={argumenty.k_sasiadow})",
             "accuracy_zamknieta": round(
-                _accuracy_zamknieta(podobienstwa_knn_znane, indeksy_prawdziwe), 4
+                accuracy_zamknieta(podobienstwa_knn_znane, indeksy_prawdziwe), 4
             ),
             "accuracy": metryki_knn["accuracy"],
             "far": metryki_knn["far"],
@@ -1164,7 +888,7 @@ def main() -> None:
             "prog": prog_knn,
             "metryki": metryki_knn,
             "accuracy_zamknieta": round(
-                _accuracy_zamknieta(podobienstwa_knn_znane, indeksy_prawdziwe), 4
+                accuracy_zamknieta(podobienstwa_knn_znane, indeksy_prawdziwe), 4
             ),
             "eer": krzywa_knn["eer"] if krzywa_knn else None,
             "auc": auc_knn,

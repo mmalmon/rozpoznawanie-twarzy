@@ -48,6 +48,7 @@ Panel prowadzi cały proces — nie trzeba już przełączać się do konsoli:
 | **Dodaj twarz** | Zapisuje wycięte twarze 224×224 do `data/raw/<osoba>/` co ok. 0,3 s, z licznikiem i celem. Działa jak automatyczny tryb `01_zbieranie_danych.py`. |
 | **Trening** | Uruchamia `02_podzial_danych.py`, a potem `03_trenowanie_modelu.py --postep` w osobnym procesie. Pasek postępu, etap, log i przycisk **Przerwij**. |
 | **Ewaluacja** | Uruchamia `07_ewaluacja.py --postep` w osobnym procesie. Pokazuje accuracy, FAR/FRR, EER, AUC, metryki na osobę, porównanie metod, wykresy PNG i galerię pomyłek. |
+| **Eksperymenty** | Uruchamia `08_eksperymenty.py --postep` w osobnym procesie. Pokazuje wpływ liczby zdjęć, jasności, `k` w k-NN i progu decyzyjnego: tabelę wyników, cztery wykresy i automatyczne wnioski. |
 | **Baza twarzy** | Miniatury, liczba zdjęć, usuwanie osoby (opcjonalnie z ponownym treningiem). |
 | **O projekcie** | Krótka instrukcja i uwagi o prywatności / AI Act. |
 
@@ -68,6 +69,7 @@ gui/camera_stream.py   wątek kamery: detekcja / rozpoznawanie / zbieranie zdję
 gui/rozpoznawanie.py   silnik: modele, wzorce, emocje, korekta progu
 gui/trening.py         subprocess 02 + 03, parser [postep], log i przerwanie
 gui/ewaluacja.py       subprocess 07, parser [postep], log i przerwanie
+gui/eksperymenty.py    subprocess 08, parser [postep], log i przerwanie
 gui/templates/         index.html (jeden widok, przełączane zakładki)
 gui/static/            Bootstrap 5 (lokalnie) + app.css + app.js
 common/rozpoznawanie.py wspólna logika dopasowania używana też przez 04
@@ -115,6 +117,12 @@ POST /api/ewaluacja/stop        przerwij ewaluację
 GET  /api/ewaluacja/raport      ostatni raport JSON
 GET  /api/ewaluacja/wykres/<n>  wykres PNG z models/ewaluacja/wykresy
 GET  /api/ewaluacja/pomylka/<n> zdjęcie z galerii pomyłek
+
+GET  /api/eksperymenty/status      stan eksperymentów (etap, %, log)
+POST /api/eksperymenty/start       uruchom 08_eksperymenty.py
+POST /api/eksperymenty/stop        przerwij eksperymenty
+GET  /api/eksperymenty/raport      ostatni raport JSON
+GET  /api/eksperymenty/wykres/<n>  wykres PNG z models/eksperymenty/wykresy
 
 GET  /api/baza                  osoby, liczba zdjęć, informacje o modelu
 GET  /api/baza/<osoba>/zdjecie  przykładowe zdjęcie osoby
@@ -168,6 +176,39 @@ sprawdzają rozszerzenie pliku i odrzucają próby wyjścia poza folder
 (`../`). Przyciski **Uruchom ewaluację** / **Przerwij** działają tak samo jak
 w treningu — przerwanie zabija proces potomny i nie zostawia połowy raportu
 (zapis odbywa się atomowo przez plik tymczasowy).
+
+## Eksperymenty
+
+`gui/eksperymenty.py` uruchamia `08_eksperymenty.py --postep` w osobnym
+procesie i czyta te same maszynowe linie postępu:
+
+```
+[postep-start] embeddingi 2745
+[postep] embeddingi 32
+...
+[postep-start] eksperymenty 21
+```
+
+Faza `embeddingi` (zdjęcia treningowe w trzech wariantach jasności,
+walidacja i obcy) odpowiada za 0–75% paska, a `eksperymenty` (cztery
+eksperymenty, wykresy, CSV i zapis raportu) za 75–97%. Po sukcesie pasek
+pokazuje 100%, a panel odświeża raport.
+
+Zakładka **Eksperymenty** pokazuje:
+
+- badge stanu, etap, procent, czas i log (bez linii maszynowych),
+- kartę „Co sprawdzamy?” z krótkim opisem czterech eksperymentów,
+- sześć kart z wynikami wariantu „wszystkie” (accuracy zamknięta
+  i otwarta, FAR, FRR, EER z progiem, AUC),
+- tabelę wszystkich wariantów: liczba zdjęć, accuracy, FAR, FRR, EER, AUC,
+- cztery wykresy PNG (liczba zdjęć, jasność, `k` w k-NN, próg decyzyjny),
+- automatyczne wnioski wygenerowane przez `08` oraz ostrzeżenia
+  metodologiczne (próg EER wybierany na `val`, więc wyniki są optymistyczne).
+
+Raport, CSV i wykresy są serwowane wyłącznie z `models/eksperymenty/`;
+endpoint `/api/eksperymenty/wykres/<n>` sprawdza rozszerzenie pliku
+i odrzuca próby wyjścia poza folder. Przerwanie działa jak w ewaluacji —
+zabija proces potomny i nie zostawia połowy raportu.
 
 ## Pliki Bootstrapa
 

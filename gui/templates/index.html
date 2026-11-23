@@ -56,6 +56,12 @@
         </svg>
         Ewaluacja
       </button>
+      <button class="nav-link" type="button" data-view="eksperymenty">
+        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19h16"/><path d="M7 16V9"/><path d="M12 16V5"/><path d="M17 16v-4"/>
+        </svg>
+        Eksperymenty
+      </button>
       <button class="nav-link" type="button" data-view="baza">
         <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>
@@ -560,6 +566,137 @@
           <div class="alert alert-warning small mb-0" id="ostrzezeniaEwaluacji">
             Ewaluacja korzysta ze zbioru walidacyjnego, który był już użyty do
             kalibracji progów w skrypcie 03 — wyniki są optymistyczne.
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================== eksperymenty -->
+      <div class="row g-3 d-none" id="viewEksperymenty">
+        <div class="col-lg-7">
+          <div class="card app-card">
+            <div class="card-header d-flex align-items-center">
+              Eksperymenty
+              <span class="badge text-bg-secondary ms-auto" id="badgeEksperymentow">Bezczynne</span>
+            </div>
+            <div class="card-body">
+              <div class="d-flex justify-content-between mb-1">
+                <span id="etapEksperymentow" class="fw-semibold">Gotowe do uruchomienia</span>
+                <span class="text-mono" id="procentEksperymentow">0%</span>
+              </div>
+              <div class="progress mb-3" style="height: 0.9rem;" role="progressbar" aria-label="Postęp eksperymentów">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" id="pasekEksperymentow" style="width: 0%"></div>
+              </div>
+
+              <div class="d-flex flex-wrap gap-2 mb-3">
+                <button class="btn btn-primary" id="btnEksperymentyStart" type="button">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5v14l11-7z"/>
+                  </svg>
+                  Uruchom eksperymenty
+                </button>
+                <button class="btn btn-outline-danger" id="btnEksperymentyStop" type="button" disabled>
+                  Przerwij
+                </button>
+                <span class="small text-muted align-self-center" id="czasEksperymentow">—</span>
+              </div>
+
+              <div class="alert alert-success d-none small" id="alertEksperymentow" role="alert"></div>
+              <div class="alert alert-danger d-none small" id="alertEksperymentowBlad" role="alert"></div>
+
+              <label class="form-label small text-muted" for="logEksperymentow">Log</label>
+              <pre class="log-treningu mb-0" id="logEksperymentow">Eksperymenty nie zostały jeszcze uruchomione.</pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-5">
+          <div class="card app-card mb-3">
+            <div class="card-header">Co sprawdzamy?</div>
+            <div class="card-body small text-muted">
+              <p class="mb-2">
+                <strong>Liczba zdjęć</strong> — czy 50 zdjęć na osobę wystarczy,
+                czy potrzebujemy 200? Więcej danych pomaga tylko do granicy
+                ustawionej przez model (skrypt 03 ogranicza liczbę prototypów).
+              </p>
+              <p class="mb-2">
+                <strong>Jasność</strong> — porównujemy same oryginały z trzema
+                wariantami jasności. To test, czy augmentacja naprawdę coś daje.
+              </p>
+              <p class="mb-2">
+                <strong>k w k-NN</strong> — ile najbliższych zdjęć bierze pod
+                uwagę klasyfikator. Małe <em>k</em> jest czułe na szum, duże
+                może mieszać podobne osoby.
+              </p>
+              <p class="mb-0">
+                <strong>Próg decyzyjny</strong> — kompromis między FAR (wpuszczanie
+                obcych) a FRR (odrzucanie swoich). Nie ma progu idealnego.
+              </p>
+            </div>
+          </div>
+
+          <div class="card app-card">
+            <div class="card-header d-flex align-items-center">
+              Ostatni raport
+              <span class="small text-muted ms-auto" id="dataRaportuEksp">—</span>
+            </div>
+            <div class="card-body small" id="podsumowanieEksperymentow">
+              <span class="text-muted">Brak raportu — uruchom eksperymenty.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header">Wnioski</div>
+            <div class="card-body small" id="wnioskiEksperymentow">
+              <span class="text-muted">Wnioski pojawią się po eksperymentach.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header">Wyniki wszystkich eksperymentów</div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0 align-middle">
+                  <thead>
+                    <tr>
+                      <th>Eksperyment</th>
+                      <th>Wariant</th>
+                      <th class="text-end">Zdjęcia</th>
+                      <th class="text-end">Acc. zamk.</th>
+                      <th class="text-end">Acc. otw.</th>
+                      <th class="text-end">FAR</th>
+                      <th class="text-end">FRR</th>
+                      <th class="text-end">EER</th>
+                      <th class="text-end">AUC</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tabelaEksperymentow">
+                    <tr><td colspan="9" class="text-muted small">Brak danych.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header">Wykresy</div>
+            <div class="card-body">
+              <div class="row g-3" id="wykresyEksperymentow">
+                <div class="col-12 text-muted small">Wykresy pojawią się po eksperymentach.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="alert alert-warning small mb-0" id="ostrzezeniaEksperymentow">
+            Eksperymenty wybierają próg EER na zbiorze walidacyjnym, więc wyniki
+            są optymistyczne. To pokazuje zależności, a nie ostateczną jakość modelu.
           </div>
         </div>
       </div>

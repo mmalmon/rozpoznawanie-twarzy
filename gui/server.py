@@ -35,6 +35,12 @@ Endpointy:
   GET  /api/ewaluacja/raport      ostatni raport JSON
   GET  /api/ewaluacja/wykres/<n>  wykres PNG z models/ewaluacja/wykresy
   GET  /api/ewaluacja/pomylka/<n> zdjęcie z galerii pomyłek
+
+  GET  /api/eksperymenty/status      stan eksperymentów (etap, %, log)
+  POST /api/eksperymenty/start       uruchom 08_eksperymenty.py
+  POST /api/eksperymenty/stop        przerwij eksperymenty
+  GET  /api/eksperymenty/raport      ostatni raport JSON
+  GET  /api/eksperymenty/wykres/<n>  wykres PNG z models/eksperymenty/wykresy
 """
 
 from __future__ import annotations
@@ -67,6 +73,11 @@ from gui.ewaluacja import (
     PLIK_RAPORTU,
     MenedzerEwaluacji,
 )
+from gui.eksperymenty import (
+    FOLDER_WYKRESOW as FOLDER_WYKRESOW_EKSPERYMENTOW,
+    PLIK_RAPORTU as PLIK_RAPORTU_EKSPERYMENTOW,
+    MenedzerEksperymentow,
+)
 from gui.rozpoznawanie import SilnikRozpoznawania
 from gui.trening import MenedzerTreningu
 
@@ -98,7 +109,7 @@ def _zdjecia_osoby(osoba: str) -> list[Path]:
 
 
 def _plik_ewaluacji(folder: Path, nazwa: str) -> Path | None:
-    """Bezpiecznie zamienia nazwę z URL na plik wewnątrz folderu ewaluacji."""
+    """Bezpiecznie zamienia nazwę z URL na plik wewnątrz podanego folderu."""
     if not nazwa:
         return None
     bezpieczna = Path(nazwa).name
@@ -170,6 +181,9 @@ def utworz_aplikacje(
 
     menedzer_ewaluacji = MenedzerEwaluacji()
     aplikacja.menedzer_ewaluacji = menedzer_ewaluacji  # type: ignore[attr-defined]
+
+    menedzer_eksperymentow = MenedzerEksperymentow()
+    aplikacja.menedzer_eksperymentow = menedzer_eksperymentow  # type: ignore[attr-defined]
 
     @aplikacja.after_request
     def _naglowki(odpowiedz):
@@ -452,6 +466,67 @@ def utworz_aplikacje(
         sciezka = _plik_ewaluacji(FOLDER_POMYLEK, nazwa)
         if sciezka is None:
             return jsonify({"ok": False, "komunikat": "Nie ma takiego zdjęcia."}), 404
+        return send_file(sciezka, max_age=0)
+
+    # ------------------------------------------------------ eksperymenty
+    @aplikacja.get("/api/eksperymenty/status")
+    def eksperymenty_status():
+        return jsonify(menedzer_eksperymentow.status())
+
+    @aplikacja.post("/api/eksperymenty/start")
+    def eksperymenty_start():
+        try:
+            menedzer_eksperymentow.start()
+        except RuntimeError as blad:
+            return jsonify({"ok": False, "komunikat": str(blad)}), 409
+        return jsonify({"ok": True, "status": menedzer_eksperymentow.status()})
+
+    @aplikacja.post("/api/eksperymenty/stop")
+    def eksperymenty_stop():
+        przerwano = menedzer_eksperymentow.zatrzymaj()
+        return jsonify(
+            {
+                "ok": True,
+                "przerwano": przerwano,
+                "status": menedzer_eksperymentow.status(),
+            }
+        )
+
+    @aplikacja.get("/api/eksperymenty/raport")
+    def eksperymenty_raport():
+        if not PLIK_RAPORTU_EKSPERYMENTOW.is_file():
+            return jsonify(
+                {
+                    "dostepny": False,
+                    "komunikat": "Brak raportu. Uruchom eksperymenty.",
+                }
+            )
+        try:
+            dane = json.loads(
+                PLIK_RAPORTU_EKSPERYMENTOW.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as blad:
+            return (
+                jsonify(
+                    {
+                        "dostepny": False,
+                        "komunikat": f"Raport jest uszkodzony: {blad}",
+                    }
+                ),
+                500,
+            )
+        dane["dostepny"] = True
+        try:
+            dane["mtime"] = int(PLIK_RAPORTU_EKSPERYMENTOW.stat().st_mtime)
+        except OSError:
+            dane["mtime"] = 0
+        return jsonify(dane)
+
+    @aplikacja.get("/api/eksperymenty/wykres/<nazwa>")
+    def eksperymenty_wykres(nazwa: str):
+        sciezka = _plik_ewaluacji(FOLDER_WYKRESOW_EKSPERYMENTOW, nazwa)
+        if sciezka is None:
+            return jsonify({"ok": False, "komunikat": "Nie ma takiego wykresu."}), 404
         return send_file(sciezka, max_age=0)
 
     # ---------------------------------------------------------------- baza

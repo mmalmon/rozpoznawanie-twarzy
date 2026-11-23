@@ -81,6 +81,24 @@
     badgePomylek: document.getElementById('badgePomylek'),
     ostrzezeniaEwaluacji: document.getElementById('ostrzezeniaEwaluacji'),
 
+    viewEksperymenty: document.getElementById('viewEksperymenty'),
+    badgeEksperymentow: document.getElementById('badgeEksperymentow'),
+    etapEksperymentow: document.getElementById('etapEksperymentow'),
+    procentEksperymentow: document.getElementById('procentEksperymentow'),
+    pasekEksperymentow: document.getElementById('pasekEksperymentow'),
+    btnEksperymentyStart: document.getElementById('btnEksperymentyStart'),
+    btnEksperymentyStop: document.getElementById('btnEksperymentyStop'),
+    czasEksperymentow: document.getElementById('czasEksperymentow'),
+    alertEksperymentow: document.getElementById('alertEksperymentow'),
+    alertEksperymentowBlad: document.getElementById('alertEksperymentowBlad'),
+    logEksperymentow: document.getElementById('logEksperymentow'),
+    podsumowanieEksperymentow: document.getElementById('podsumowanieEksperymentow'),
+    dataRaportuEksp: document.getElementById('dataRaportuEksp'),
+    wnioskiEksperymentow: document.getElementById('wnioskiEksperymentow'),
+    tabelaEksperymentow: document.getElementById('tabelaEksperymentow'),
+    wykresyEksperymentow: document.getElementById('wykresyEksperymentow'),
+    ostrzezeniaEksperymentow: document.getElementById('ostrzezeniaEksperymentow'),
+
     viewBaza: document.getElementById('viewBaza'),
     badgeBazy: document.getElementById('badgeBazy'),
     btnOdswiezBaze: document.getElementById('btnOdswiezBaze'),
@@ -141,6 +159,11 @@
       podtytul: 'Accuracy, FAR/FRR, macierz pomyłek i porównanie metod',
       kamera: false,
     },
+    eksperymenty: {
+      tytul: 'Eksperymenty',
+      podtytul: 'Wpływ liczby zdjęć, jasności, k w k-NN i progu decyzyjnego',
+      kamera: false,
+    },
     baza: {
       tytul: 'Baza twarzy',
       podtytul: 'Podgląd i usuwanie zapisanych osób',
@@ -189,6 +212,21 @@
     przerwany: ['Przerwano', 'text-bg-secondary'],
   };
 
+  const OPIS_EKSPERYMENTOW = {
+    bezczynny: ['Bezczynne', 'text-bg-secondary'],
+    dziala: ['Trwają eksperymenty', 'text-bg-warning'],
+    gotowe: ['Gotowe', 'text-bg-success'],
+    blad: ['Błąd', 'text-bg-danger'],
+    przerwany: ['Przerwano', 'text-bg-secondary'],
+  };
+
+  const OPIS_WYKRESOW_EKSPERYMENTOW = {
+    wplyw_liczby_zdjec: 'Wpływ liczby zdjęć treningowych',
+    wplyw_jasnosci: 'Wpływ augmentacji jasności',
+    wplyw_k: 'Wpływ liczby sąsiadów k w k-NN',
+    prog_decyzyjny: 'Kompromis FAR / FRR przy różnych progach',
+  };
+
   const OPIS_WYKRESOW = {
     macierz_pomylek: 'Macierz pomyłek',
     rozklad_podobienstw: 'Rozkład podobieństw: swoi vs obcy',
@@ -213,6 +251,8 @@
     odswiezanie: false,
     raportEwaluacji: null,
     czasRaportu: null,
+    raportEksperymentow: null,
+    czasRaportuEksp: null,
     ostatnieWyniki: '',
   };
 
@@ -369,6 +409,7 @@
     el.statRow.classList.toggle('d-none', !opis.kamera);
     el.viewTrening.classList.toggle('d-none', nazwa !== 'trening');
     el.viewEwaluacja.classList.toggle('d-none', nazwa !== 'ewaluacja');
+    el.viewEksperymenty.classList.toggle('d-none', nazwa !== 'eksperymenty');
     el.viewBaza.classList.toggle('d-none', nazwa !== 'baza');
     el.viewInfo.classList.toggle('d-none', nazwa !== 'info');
 
@@ -392,6 +433,9 @@
     } else if (nazwa === 'ewaluacja') {
       await odswiezEwaluacje();
       await odswiezRaportEwaluacji();
+    } else if (nazwa === 'eksperymenty') {
+      await odswiezEksperymenty();
+      await odswiezRaportEksperymentow();
     } else if (nazwa === 'baza') {
       await odswiezBaze();
     }
@@ -1181,6 +1225,226 @@
     }
   }
 
+  // -------------------------------------------------------- eksperymenty
+  function renderEksperymenty(dane) {
+    const [opis, klasa] = OPIS_EKSPERYMENTOW[dane.stan] || OPIS_EKSPERYMENTOW.bezczynny;
+    el.badgeEksperymentow.textContent = opis;
+    el.badgeEksperymentow.className = `badge ms-auto ${klasa}`;
+    el.etapEksperymentow.textContent = dane.etap || 'Gotowe do uruchomienia';
+    el.procentEksperymentow.textContent = `${Math.round(dane.postep || 0)}%`;
+    el.pasekEksperymentow.style.width = `${ogranicz(dane.postep)}%`;
+
+    const trwa = dane.stan === 'dziala';
+    el.btnEksperymentyStart.disabled = trwa;
+    el.btnEksperymentyStop.disabled = !trwa;
+    el.pasekEksperymentow.classList.toggle('progress-bar-animated', trwa);
+    el.pasekEksperymentow.classList.toggle('progress-bar-striped', trwa);
+
+    el.czasEksperymentow.textContent = dane.czas_s
+      ? `Czas: ${opisCzasu(dane.czas_s)}`
+      : '—';
+
+    el.alertEksperymentow.classList.toggle('d-none', dane.stan !== 'gotowe');
+    if (dane.stan === 'gotowe') {
+      el.alertEksperymentow.textContent =
+        'Eksperymenty zakończone. Raport, CSV i wykresy są gotowe.';
+    }
+
+    const bladWidoczny = dane.stan === 'blad' || dane.stan === 'przerwany';
+    el.alertEksperymentowBlad.classList.toggle('d-none', !bladWidoczny);
+    if (bladWidoczny) {
+      el.alertEksperymentowBlad.textContent =
+        dane.blad || 'Eksperymenty nie zostały ukończone.';
+    }
+
+    const log = (dane.log || []).join('\n');
+    if (log && el.logEksperymentow.textContent !== log) {
+      el.logEksperymentow.textContent = log;
+      el.logEksperymentow.scrollTop = el.logEksperymentow.scrollHeight;
+    }
+  }
+
+  async function odswiezEksperymenty() {
+    try {
+      const dane = await pobierz('/api/eksperymenty/status');
+      renderEksperymenty(dane);
+      if (dane.czas_raportu && dane.czas_raportu !== stan.czasRaportuEksp) {
+        stan.czasRaportuEksp = dane.czas_raportu;
+        await odswiezRaportEksperymentow();
+      }
+      return dane;
+    } catch (blad) {
+      pokazBlad(blad.message);
+      return null;
+    }
+  }
+
+  async function startEksperymentow() {
+    el.btnEksperymentyStart.disabled = true;
+    try {
+      await wyslij('/api/eksperymenty/start');
+      el.logEksperymentow.textContent = 'Uruchamianie eksperymentów…';
+      pokazInfo('Eksperymenty uruchomione.');
+      await odswiezEksperymenty();
+    } catch (blad) {
+      pokazBlad(blad.message);
+      el.btnEksperymentyStart.disabled = false;
+    }
+  }
+
+  async function stopEksperymentow() {
+    el.btnEksperymentyStop.disabled = true;
+    try {
+      await wyslij('/api/eksperymenty/stop');
+      await odswiezEksperymenty();
+      pokazInfo('Eksperymenty przerwane.');
+    } catch (blad) {
+      pokazBlad(blad.message);
+    }
+  }
+
+  function renderRaportEksperymentow(dane) {
+    if (!dane || !dane.dostepny) {
+      el.dataRaportuEksp.textContent = '—';
+      el.podsumowanieEksperymentow.innerHTML =
+        `<span class="text-muted">${escapeHtml(
+          (dane && dane.komunikat) || 'Brak raportu — uruchom eksperymenty.',
+        )}</span>`;
+      el.wnioskiEksperymentow.innerHTML =
+        '<span class="text-muted">Wnioski pojawią się po eksperymentach.</span>';
+      el.tabelaEksperymentow.innerHTML =
+        '<tr><td colspan="9" class="text-muted small">Brak danych.</td></tr>';
+      el.wykresyEksperymentow.innerHTML =
+        '<div class="col-12 text-muted small">Wykresy pojawią się po eksperymentach.</div>';
+      return;
+    }
+
+    stan.raportEksperymentow = dane;
+    const wersja = dane.mtime || Date.now();
+    const eksperymenty = dane.eksperymenty || {};
+    const informacje = dane.dane || {};
+    const rozmiary = eksperymenty.rozmiar_zbioru || [];
+    const wzorzec =
+      rozmiary.find((wpis) => wpis.etykieta === 'wszystkie') ||
+      rozmiary[rozmiary.length - 1];
+    const metryki = (wzorzec && wzorzec.metryki) || {};
+
+    el.dataRaportuEksp.textContent = dane.wygenerowano
+      ? dane.wygenerowano.replace('T', ' ')
+      : '—';
+
+    const karty = [
+      ['Accuracy (zamk.)', formatujProcent(metryki.accuracy_zamknieta), 'kogo-kim'],
+      ['Accuracy (otw.)', formatujProcent(metryki.accuracy_otwarta), 'z odrzucaniem obcych'],
+      [
+        'EER',
+        formatujProcent(metryki.eer),
+        metryki.prog_eer != null ? `próg ${formatuj(metryki.prog_eer, 2)}` : '—',
+      ],
+      ['FAR', formatujProcent(metryki.far), `${metryki.zaakceptowani_obcy ?? '—'} obcych`],
+      ['FRR', formatujProcent(metryki.frr), `${metryki.odrzucone_znane ?? '—'} odrzuconych`],
+      ['AUC', metryki.auc != null ? formatuj(metryki.auc, 3) : '—', '1,0 = idealnie'],
+    ];
+
+    el.podsumowanieEksperymentow.innerHTML =
+      '<div class="row g-2">' +
+      karty
+        .map(
+          ([nazwa, wartosc, dopisek]) =>
+            '<div class="col-6"><div class="border rounded p-2 h-100">' +
+            `<div class="text-muted text-uppercase" style="font-size:.65rem;">${nazwa}</div>` +
+            `<div class="h5 mb-0 text-mono">${wartosc}</div>` +
+            `<div class="text-muted" style="font-size:.7rem;">${dopisek}</div>` +
+            '</div></div>',
+        )
+        .join('') +
+      '</div>' +
+      `<p class="small text-muted mt-2 mb-0">Osoby: ${escapeHtml(
+        (informacje.osoby || []).join(', ') || '—',
+      )}` +
+      ` · trening: ${informacje.zdjecia_treningowe_razem ?? '—'} zdjęć` +
+      ` · obcy: ${informacje.obcy ? informacje.obcy.zdjecia : '—'} zdjęć` +
+      ` · czas: ${formatuj(dane.czas_s, 0)} s</p>`;
+
+    const sekcje = [
+      ['Liczba zdjęć', rozmiary, (wpis) => wpis.etykieta],
+      ['Jasność', eksperymenty.jasnosc || [], (wpis) => wpis.etykieta],
+      ['k-NN', eksperymenty.knn || [], (wpis) => `k = ${wpis.k}`],
+      [
+        'Próg decyzyjny',
+        eksperymenty.prog_decyzyjny || [],
+        (wpis) => (wpis.prog != null ? formatuj(wpis.prog, 2) : '—'),
+      ],
+    ];
+
+    const wiersze = [];
+    sekcje.forEach(([nazwa, lista, opisWariantu]) => {
+      lista.forEach((wpis) => {
+        const m = wpis.metryki || wpis;
+        wiersze.push(
+          '<tr>' +
+            `<td class="fw-semibold">${escapeHtml(nazwa)}</td>` +
+            `<td>${escapeHtml(opisWariantu(wpis))}</td>` +
+            `<td class="text-end text-mono">${wpis.liczba_zdjec_treningowych ?? '—'}</td>` +
+            `<td class="text-end text-mono">${formatujProcent(m.accuracy_zamknieta)}</td>` +
+            `<td class="text-end text-mono">${formatujProcent(m.accuracy_otwarta ?? m.accuracy)}</td>` +
+            `<td class="text-end text-mono">${formatujProcent(m.far)}</td>` +
+            `<td class="text-end text-mono">${formatujProcent(m.frr)}</td>` +
+            `<td class="text-end text-mono">${formatujProcent(m.eer)}</td>` +
+            `<td class="text-end text-mono">${m.auc != null ? formatuj(m.auc, 3) : '—'}</td>` +
+            '</tr>',
+        );
+      });
+    });
+
+    el.tabelaEksperymentow.innerHTML = wiersze.length
+      ? wiersze.join('')
+      : '<tr><td colspan="9" class="text-muted small">Brak danych.</td></tr>';
+
+    const wnioski = dane.wnioski || [];
+    el.wnioskiEksperymentow.innerHTML = wnioski.length
+      ? `<ol class="mb-0 ps-3">${wnioski
+          .map((tekst) => `<li class="mb-2">${escapeHtml(tekst)}</li>`)
+          .join('')}</ol>`
+      : '<span class="text-muted">Raport nie zawiera wniosków.</span>';
+
+    const wykresy = Object.entries(dane.wykresy || {});
+    el.wykresyEksperymentow.innerHTML = wykresy.length
+      ? wykresy
+          .map(([klucz, plik]) => {
+            const opis = OPIS_WYKRESOW_EKSPERYMENTOW[klucz] || klucz;
+            const adres = `/api/eksperymenty/wykres/${encodeURIComponent(plik)}?v=${wersja}`;
+            return (
+              '<div class="col-xl-6"><div class="card h-100 border">' +
+              '<div class="card-body p-2">' +
+              `<img class="wykres-ewaluacji" src="${adres}" alt="${escapeHtml(opis)}" loading="lazy">` +
+              `<div class="small text-muted mt-2 text-center">${escapeHtml(opis)}</div>` +
+              '</div></div></div>'
+            );
+          })
+          .join('')
+      : '<div class="col-12 text-muted small">Brak wykresów.</div>';
+
+    const ostrzezenia = informacje.ostrzezenia || [];
+    el.ostrzezeniaEksperymentow.innerHTML = ostrzezenia.length
+      ? ostrzezenia
+          .map(
+            (tekst, indeks) =>
+              `<p class="${indeks === ostrzezenia.length - 1 ? 'mb-0' : 'mb-1'}">${escapeHtml(tekst)}</p>`,
+          )
+          .join('')
+      : 'Eksperymenty wybierają próg na zbiorze walidacyjnym — wyniki są optymistyczne.';
+  }
+
+  async function odswiezRaportEksperymentow() {
+    try {
+      const dane = await pobierz('/api/eksperymenty/raport');
+      renderRaportEksperymentow(dane);
+    } catch (blad) {
+      pokazBlad(blad.message);
+    }
+  }
+
   // ----------------------------------------------------------------- baza
   function renderBaza(dane) {
     const osoby = dane.osoby || [];
@@ -1350,6 +1614,8 @@
     el.btnTreningStop.addEventListener('click', stopTreningu);
     el.btnEwaluacjaStart.addEventListener('click', startEwaluacji);
     el.btnEwaluacjaStop.addEventListener('click', stopEwaluacji);
+    el.btnEksperymentyStart.addEventListener('click', startEksperymentow);
+    el.btnEksperymentyStop.addEventListener('click', stopEksperymentow);
     el.btnOdswiezBaze.addEventListener('click', odswiezBaze);
     el.btnPotwierdzUsun.addEventListener('click', potwierdzUsuniecie);
 
@@ -1429,6 +1695,13 @@
     setInterval(() => {
       if (stan.widok === 'ewaluacja') {
         odswiezEwaluacje();
+      }
+    }, 1000);
+
+    // Eksperymenty: tak samo — poller działa tylko na aktywnym widoku.
+    setInterval(() => {
+      if (stan.widok === 'eksperymenty') {
+        odswiezEksperymenty();
       }
     }, 1000);
   }
