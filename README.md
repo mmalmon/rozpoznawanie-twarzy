@@ -122,7 +122,7 @@ progu, program pokazuje etykietę "Nieznana osoba" zamiast zgadywać.
 rozpoznawanie twarzy/
 ├── 00_test_detekcji.py          # krok 0: szybki test detekcji (bez rozpoznawania)
 ├── 01_zbieranie_danych.py       # krok 1: zbieranie zdjęć z kamery
-├── 02_podzial_danych.py         # krok 2: podział na train/val
+├── 02_podzial_danych.py         # krok 2: podział na train/val/test
 ├── 03_trenowanie_modelu.py      # krok 3: wzorce tozsamosci (embeddingi) + kalibracja progu
 ├── 04_rozpoznawanie_na_zywo.py  # krok 4: rozpoznawanie na żywo z kamery
 ├── 05_ekran_z_kawalami.py       # pomocniczy: ekran z kawałami sterowany gestem (MediaPipe)
@@ -163,7 +163,7 @@ rozpoznawanie twarzy/
 ├── detection/                   # zgodność wsteczna: re-eksport src/detection/detector.py
 ├── data/
 │   ├── raw/<osoba>/             # surowe zdjęcia z kamery (per osoba)
-│   └── processed/{train,val}/   # dane po podziale, gotowe do treningu
+│   └── processed/{train,val,test}/  # dane po podziale, gotowe do treningu i oceny
 ├── models/
 │   ├── wzorce_osob.json         # wzorce zdjec tozsamosci + skalibrowane progi
 │   ├── kalibracja_progu.png     # wykres pomagajacy zrozumiec dobor progu
@@ -391,15 +391,32 @@ Jeśli chcesz zapisywać materiał z pełnego 4K, dopisz
 > niżej), więc ich stylistyczna odmienność od zdjęć z kamery nie stanowi
 > już problemu (w odróżnieniu od podejścia klasyfikacyjnego).
 
-### Krok 2 — podział na zbiór treningowy i walidacyjny
+### Krok 2 — podział na zbiór treningowy, walidacyjny i testowy
 
 ```powershell
 python 02_podzial_danych.py
 ```
 
-Domyślnie 80% zdjęć każdej osoby trafia do treningu, a 20% do walidacji
-(używanej do sprawdzania, czy model się nie przeucza). Wynik trafia do
-`data/processed/train/` i `data/processed/val/`.
+Domyślnie **70%** zdjęć każdej osoby trafia do treningu, **15%** do
+walidacji, a **15%** do testu. Można to zmienić parametrami `--val-split`
+i `--test-split` (np. `--val-split 0.1 --test-split 0.2`). Wynik trafia do
+`data/processed/train/`, `data/processed/val/` i `data/processed/test/`.
+
+Po co aż trzy zbiory?
+
+- **train** — z niego krok 3 buduje wzorce tożsamości,
+- **val** — na nim kalibrujemy próg decyzyjny; model nie uczy się na tych
+  zdjęciach, ale „widzi” je pośrednio przy wyborze progu,
+- **test** — leży nietknięty do samego końca. Sięgają po niego dopiero
+  skrypty `07` i `08`, żeby zmierzyć ostateczną jakość.
+
+Gdyby próg ustawić i raportować na tym samym zbiorze, wynik byłby
+**optymistyczny** — próg „dopasowałby się” do tych zdjęć. Test ma to
+wyeliminować. To jedna z najważniejszych zasad oceny modeli.
+
+> Przy małych zbiorach podział 15/15% daje kilkadziesiąt zdjęć testowych.
+> Jedna pomyłka zmienia wtedy wynik o kilka punktów procentowych — dlatego
+> w raportach podajemy też surowe liczby, a nie tylko procenty.
 
 ### Krok 3 — budowanie wzorców tożsamości i kalibracja progu
 
@@ -463,8 +480,10 @@ i gdzie się myli?”** — zamiast tylko „czy działa”. Uruchom po treningu
 python 07_ewaluacja.py
 ```
 
-Skrypt liczy embeddingi zbioru walidacyjnego (`data/processed/val`) oraz
-zdjęć obcych osób z `data/raw/nieznajomy` i wyznacza:
+Skrypt liczy embeddingi zbioru **testowego** (`data/processed/test`),
+a progi decyzyjne dobiera na zbiorze **walidacyjnym**. Jako „obcych” używa
+zdjęć klasy `nieznajomy` ze zbiorów `train` i `test` — celowo **bez**
+`val`, bo walidacja posłużyła do kalibracji progów. Wyznacza:
 
 - **accuracy** — odsetek znanych twarzy rozpoznanych poprawnie,
 - **precision / recall / F1** dla każdej osoby (czy model nie myli jej
@@ -486,6 +505,19 @@ logistyczną** z `scikit-learn`. To dobra lekcja: te same cechy i różne
 sposoby podejmowania decyzji dają różne wyniki — deep learning nie zawsze
 jest ostatnim słowem.
 
+Przykładowe wyniki na zbiorze testowym (130 znanych zdjęć + 128 obcych):
+
+| Metoda | Accuracy | FAR | FRR | EER | AUC |
+| --- | --- | --- | --- | --- | --- |
+| Prototypy (progi z `03`) | 100,0% | 0,0% | 0,0% | 0,0% | 1,000 |
+| k-NN (k = 5) | 100,0% | 4,7% | 0,0% | 0,0% | 1,000 |
+| Regresja logistyczna | 96,9% | 0,8% | 3,1% | 2,7% | 0,999 |
+
+Widać ciekawą rzecz: k-NN ma idealne accuracy, ale wpuszcza 4,7% obcych,
+a regresja jest ostrożniejsza — rzadziej wpuszcza obcego, za to częściej
+odrzuca swoich. **Nie ma jednej „najlepszej” metody** — wybór zależy od
+tego, który błąd jest w danym zastosowaniu gorszy.
+
 Wyniki trafiają do:
 
 ```
@@ -498,19 +530,23 @@ Opcje przydatne na lekcji: `--k-sasiadow 7` (inne `k` w k-NN),
 `--maks-pomylek 12` (ile zdjęć zapisać do galerii; `0` = nie zapisuj) oraz
 `--postep` (maszynowe linie postępu dla panelu GUI).
 
-> **Uwaga metodologiczna — bardzo ważna.** Zbiór walidacyjny był już użyty
-> w kroku 3 do **kalibracji progów**, a próg dla k-NN i regresji
-> logistycznej jest wybierany na tym samym zbiorze (punkt EER). Wyniki są
-> więc **optymistyczne**. Do rzetelnej oceny potrzebny jest osobny zbiór
-> **testowy**, którego nie użyto ani do treningu, ani do kalibracji.
-> Ostrzeżenia są zapisane w raporcie JSON i pokazane w panelu — nie
-> ukrywamy tego przed uczniami.
+> **Metodologia — dlaczego ten wynik jest uczciwy.** Próg każdej osoby
+> pochodzi z kroku 3 i został skalibrowany na zbiorze walidacyjnym. Próg
+> EER dla k-NN i regresji logistycznej także wybieramy na walidacji, a
+> dopiero potem **bez zmian** stosujemy do testu. Same metryki liczymy
+> wyłącznie na zbiorze testowym, którego nie użyto ani do budowy wzorców,
+> ani do wyboru progu — dlatego nie jest on „dopasowany” do danych
+> kalibracyjnych.
 >
-> Zdjęcia obcych pochodzą z `data/raw/nieznajomy`; część z nich mogła
-> wcześniej trafić do walidacji, dlatego FAR też jest zaniżony
-> w optymistyczną stronę. Przy tłumaczeniu wyników warto to podkreślić:
-> **dobre wyniki na danych, które model „widział”, nie gwarantują dobrego
-> działania na nowych osobach.**
+> To różnica między eksperymentem a chwaleniem się wynikiem. Zdjęcia obcych
+> pochodzą z klas `nieznajomy` w `train` i `test` (bez `val`), więc FAR
+> też nie jest policzony na danych kalibracyjnych.
+>
+> **Test jest mały.** Przy 15% zbioru to zwykle kilkadziesiąt zdjęć na
+> osobę. Jedna pomyłka zmienia accuracy o kilka punktów procentowych.
+> Dlatego wynik 100% na teście nie oznacza „model jest idealny” — oznacza
+> „ten konkretny test nie pokazał błędu”. Ostrzeżenia są zapisane w
+> raporcie JSON i pokazane w panelu.
 
 ### Jak czytać wykresy z ewaluacji
 
@@ -557,30 +593,31 @@ Skrypt przeprowadza cztery eksperymenty:
 
 Dla każdego wariantu liczone są te same metryki co w kroku 5: accuracy
 zamknięta (kogo-kim, bez odrzucania), accuracy otwarta (z opcją
-„nieznana osoba”), FAR, FRR, EER i AUC. Próg dla każdego wariantu jest
-wybierany w punkcie EER, żeby porównywać metody przy podobnym kompromisie
-błędów.
+„nieznana osoba”), FAR, FRR, EER i AUC. Próg decyzyjny wybieramy w punkcie
+EER **na zbiorze walidacyjnym** i stosujemy bez zmian do **testu** — tam
+też liczymy wszystkie metryki. Dzięki temu eksperymenty oceniają uczciwie,
+a nie na danych, z których wybierano próg.
 
-Przykładowe wyniki na danych projektu (3 osoby, 700 zdjęć treningowych,
-175 zdjęć walidacyjnych znanych osób i 150 obcych, ok. 82 s na GPU):
+Przykładowe wyniki na danych projektu (3 osoby, 615 znanych zdjęć
+treningowych + 106 obcych, 130 znanych zdjęć testowych + 22 obcych,
+ok. 44 s na GPU):
 
-| Eksperyment | Wariant | Acc. zamk. | EER |
-| --- | --- | --- | --- |
-| Liczba zdjęć | 50 | 100,0% | 0,6% |
-| Liczba zdjęć | 100 | 100,0% | 0,3% |
-| Liczba zdjęć | 200 / wszystkie | 100,0% | 0,6% |
-| Jasność | tylko oryginał | 100,0% | 0,6% |
-| Jasność | 3 warianty | 100,0% | 0,6% |
-| k-NN | k = 1 / 3 | 100,0% | 0,0% |
-| k-NN | k = 5 / 9 / 15 | 100,0% | 0,6% |
-| Próg 0,50 | — | — | FAR 100%, FRR 0% |
-| Próg 0,85–0,90 | — | 99,4% | FAR 0%, FRR 0,6% |
-| Próg 0,95 | — | 92,6% | FAR 0%, FRR 7,4% |
+| Eksperyment | Wariant | Acc. zamk. | Acc. otw. | EER |
+| --- | --- | --- | --- | --- |
+| Liczba zdjęć | 50 | 100,0% | 100,0% | 0,4% |
+| Liczba zdjęć | 100 | 100,0% | 100,0% | 0,0% |
+| Liczba zdjęć | 200 / wszystkie | 100,0% | 100,0% | 0,0% |
+| Jasność | tylko oryginał | 100,0% | 100,0% | 0,0% |
+| Jasność | 3 warianty | 100,0% | 100,0% | 0,0% |
+| k-NN | k = 1 / 3 / 5 / 9 / 15 | 100,0% | 100,0% | 0,0% |
+| Próg 0,50 | — | 100,0% | 100,0% | FAR 100%, FRR 0% |
+| Próg 0,85–0,90 | — | 100,0% | 100,0% | FAR 0%, FRR 0% |
+| Próg 0,95 | — | 93,8% | 93,8% | FAR 0%, FRR 6,2% |
 
-Na tych danych accuracy zamknięta jest **sufitowa** (100% w każdym
-wariancie), więc różnice widać dopiero w EER i w tabeli progów. To też
-jest lekcja: przy łatwym zbiorze trzeba patrzeć na trudniejsze miary,
-a nie tylko na jedną „ładną” liczbę.
+Na tych danych accuracy jest **sufitowa** (100% w każdym wariancie), więc
+różnice widać dopiero w EER, FAR i w tabeli progów. To też jest lekcja:
+przy łatwym zbiorze trzeba patrzeć na trudniejsze miary, a nie tylko na
+jedną „ładną” liczbę.
 
 Dwa efekty warte omówienia z klasą:
 
@@ -588,12 +625,16 @@ Dwa efekty warte omówienia z klasą:
   wariant jasności. Dlatego warianty „200” i „wszystkie” mają tyle samo
   prototypów (1152) i dają identyczny wynik — dodatkowe zdjęcia nie
   zmieniają decyzji, dopóki nie podniesiemy tego limitu. „Więcej danych”
-  działa tylko do granicy ustawionej przez projekt modelu.
-- **Próg to wybór, nie prawda.** Przy progu 0,50 model wpuszcza prawie
+  działa tylko do granicy ustawionej przez projekt modelu. Przy 50
+  zdjęciach na osobę EER rośnie tylko do 0,4%, a FAR wynosi 3,1% zamiast
+  4,7–6,3% — pozornie „lepiej”. Przy 128 zdjęciach testowych jedna
+  zaakceptowana twarz zmienia FAR o 0,8 pkt proc., więc takie różnice to
+  szum, nie dowód. Na trudniejszym zbiorze różnica byłaby większa.
+- **Próg to wybór, nie prawda.** Przy progu 0,50 model wpuszcza
   wszystkich obcych (FAR 100%). Przy 0,85–0,90 nie wpuszcza żadnego
-  obcego, ale odrzuca 0,6% swoich. Przy 0,95 odrzuca już 7,4% swoich.
-  Nie ma progu idealnego — wybór zależy od tego, co w danym zastosowaniu
-  jest gorsze.
+  obcego i nie odrzuca swoich (FAR 0%, FRR 0%). Przy 0,95 zaczyna
+  odrzucać 6,2% swoich, bo próg jest zbyt ostry. Nie ma progu idealnego —
+  wybór zależy od tego, co w danym zastosowaniu jest gorsze.
 
 Wyniki trafiają do:
 
@@ -620,11 +661,11 @@ Opcje: `--batch-size 16` (ile zdjęć naraz trafia do sieci), `--seed 42`
   Widać, gdzie FAR spada do zera i ile kosztuje to w FRR.
 
 > **Uwaga metodologiczna.** Podobnie jak w kroku 5, próg EER jest
-> wybierany na tym samym zbiorze walidacyjnym, na którym liczymy metryki.
-> Wyniki są więc **optymistyczne** i pokazują *zależności*, a nie
-> ostateczną jakość modelu. W prawdziwym projekcie próg ustawia się na
-> jednym zbiorze, a raportuje na innym, nowym zbiorze testowym.
-> Ostrzeżenia są zapisane w raporcie JSON i pokazane w panelu.
+> wybierany na zbiorze **walidacyjnym**, a metryki liczymy na **testowym**.
+> Test nie bierze udziału ani w budowie prototypów, ani w wyborze progu —
+> dlatego wynik jest uczciwy. Jest jednak mały, więc pojedyncza pomyłka
+> zmienia procent o kilka punktów. Ostrzeżenia są zapisane w raporcie JSON
+> i pokazane w panelu.
 
 ## Jak przygotować dobre materiały treningowe
 
@@ -774,9 +815,11 @@ Ten projekt naprawia to automatycznie (`common/camera.py` wywołuje
   CSV/bazy danych — np. jako prosty system obecności na zajęciach.
 - Poeksperymentować z inną architekturą backbone'u (np.
   `resnet18`, `efficientnet_b0`) i porównać dokładność/szybkość.
-- Dodać **osobny zbiór testowy** (np. zdjęcia z innego dnia niż trening)
-  i sprawdzić, o ile wyniki spadną względem optymistycznej ewaluacji na
-  `val`. To najważniejsze ćwiczenie z metodologii eksperymentu.
+- Zebrać **trudniejszy zbiór testowy** (zdjęcia z innego dnia, innego
+  urządzenia, gorsze światło) i podmienić `data/processed/test`. Projekt ma
+  już uczciwy podział train/val/test — sprawdźcie, o ile wynik spadnie,
+  gdy test przestanie być „łatwy”. To najważniejsze ćwiczenie z metodologii
+  eksperymentu.
 - Zbadać wpływ progu decyzyjnego na FAR/FRR w praktyce: przy jakim progu
   system wpuszcza obcych, a przy jakim odmawia dostępu własnym osobom?
 - Zmierzyć wpływ liczby zdjęć treningowych na dokładność (np. wytrenować

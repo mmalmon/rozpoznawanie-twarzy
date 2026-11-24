@@ -33,6 +33,7 @@ PLIK_RAPORTU = FOLDER_EWALUACJI / "raport_ewaluacji.json"
 SKRYPT_EWALUACJI = KORZEN_PROJEKTU / "07_ewaluacja.py"
 PLIK_WZORCOW = KORZEN_PROJEKTU / "models" / "wzorce_osob.json"
 FOLDER_WALIDACJI = KORZEN_PROJEKTU / "data" / "processed" / "val"
+FOLDER_TESTOWY = KORZEN_PROJEKTU / "data" / "processed" / "test"
 
 STAN_BEZCZYNNY = "bezczynny"
 STAN_DZIALA = "dziala"
@@ -106,16 +107,23 @@ class MenedzerEwaluacji:
                 "Brak wytrenowanych wzorców (models/wzorce_osob.json). "
                 "Najpierw uruchom trening."
             )
-        if not FOLDER_WALIDACJI.is_dir():
-            return (
-                "Brak zbioru walidacyjnego (data/processed/val). "
-                "Najpierw uruchom trening — skrypt 02 podzieli dane."
-            )
-        if not any(
-            folder.is_dir() and any(folder.iterdir())
-            for folder in FOLDER_WALIDACJI.iterdir()
+        for folder, nazwa, podpowiedz in (
+            (
+                FOLDER_WALIDACJI,
+                "walidacyjnego (data/processed/val)",
+                "Uruchom trening — skrypt 02 podzieli dane.",
+            ),
+            (
+                FOLDER_TESTOWY,
+                "testowego (data/processed/test)",
+                "Uruchom ponownie trening — skrypt 02 doda nowy zbiór testowy.",
+            ),
         ):
-            return "Zbiór walidacyjny jest pusty — uruchom ponownie trening."
+            if not folder.is_dir() or not any(
+                podfolder.is_dir() and any(podfolder.iterdir())
+                for podfolder in folder.iterdir()
+            ):
+                return f"Brak zbioru {nazwa}. {podpowiedz}"
         return None
 
     def _uruchom_ewaluacje(self) -> None:

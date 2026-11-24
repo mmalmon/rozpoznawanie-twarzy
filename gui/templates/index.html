@@ -564,8 +564,8 @@
 
         <div class="col-12">
           <div class="alert alert-warning small mb-0" id="ostrzezeniaEwaluacji">
-            Ewaluacja korzysta ze zbioru walidacyjnego, który był już użyty do
-            kalibracji progów w skrypcie 03 — wyniki są optymistyczne.
+            Ewaluacja raportuje na zbiorze testowym, którego nie użyto do uczenia
+            ani kalibracji progów. Próg kalibrowano na walidacji — to uczciwy pomiar.
           </div>
         </div>
       </div>
@@ -695,8 +695,9 @@
 
         <div class="col-12">
           <div class="alert alert-warning small mb-0" id="ostrzezeniaEksperymentow">
-            Eksperymenty wybierają próg EER na zbiorze walidacyjnym, więc wyniki
-            są optymistyczne. To pokazuje zależności, a nie ostateczną jakość modelu.
+            Eksperymenty mierzą wyniki na zbiorze testowym, a próg EER wybierają
+            na walidacji. Pokazują zależności, ale przy małym teście różnice
+            1–2 punktów procentowych mogą być przypadkiem.
           </div>
         </div>
       </div>

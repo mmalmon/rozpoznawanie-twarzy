@@ -46,7 +46,7 @@ Panel prowadzi cały proces — nie trzeba już przełączać się do konsoli:
 | **Detekcja na żywo** | Ramki wokół twarzy, procent pewności, FPS, liczba twarzy. Wybór kamery, progu i minimalnej proporcji twarzy. |
 | **Rozpoznawanie** | Wczytuje `models/wzorce_osob.json` w tle i pokazuje imię + podobieństwo. Karta **Wynik rozpoznawania** pokazuje TOP-3 kandydatów: paski podobieństwa i znacznik progu. Suwak **Korekta progu** (jak `--korekta-progu` w `04`). Przełącznik **Wykrywanie emocji** (domyślnie OFF). |
 | **Dodaj twarz** | Zapisuje wycięte twarze 224×224 do `data/raw/<osoba>/` co ok. 0,3 s, z licznikiem i celem. Działa jak automatyczny tryb `01_zbieranie_danych.py`. |
-| **Trening** | Uruchamia `02_podzial_danych.py`, a potem `03_trenowanie_modelu.py --postep` w osobnym procesie. Pasek postępu, etap, log i przycisk **Przerwij**. |
+| **Trening** | Uruchamia `02_podzial_danych.py` (train/val/test), a potem `03_trenowanie_modelu.py --postep` w osobnym procesie. Pasek postępu, etap, log i przycisk **Przerwij**. |
 | **Ewaluacja** | Uruchamia `07_ewaluacja.py --postep` w osobnym procesie. Pokazuje accuracy, FAR/FRR, EER, AUC, metryki na osobę, porównanie metod, wykresy PNG i galerię pomyłek. |
 | **Eksperymenty** | Uruchamia `08_eksperymenty.py --postep` w osobnym procesie. Pokazuje wpływ liczby zdjęć, jasności, `k` w k-NN i progu decyzyjnego: tabelę wyników, cztery wykresy i automatyczne wnioski. |
 | **Baza twarzy** | Miniatury, liczba zdjęć, usuwanie osoby (opcjonalnie z ponownym treningiem). |
@@ -151,7 +151,7 @@ przyciskiem **Przerwij** zabija proces potomny i nie nadpisuje modelu.
 i czyta te same maszynowe linie postępu:
 
 ```
-[postep-start] embeddingi 2785
+[postep-start] embeddingi 2467
 [postep] embeddingi 32
 ...
 [postep-start] metryki 4
@@ -168,8 +168,9 @@ Zakładka **Ewaluacja** pokazuje:
 - tabelę precision / recall / F1 na osobę,
 - tabelę porównania metod (prototypy, k-NN, regresja logistyczna),
 - wykresy PNG i galerię pomyłek z podpisami „prawdziwa → przewidziana”,
-- ostrzeżenia metodologiczne z raportu (wyniki na `val` są optymistyczne,
-  bo ten zbiór posłużył do kalibracji progów).
+- ostrzeżenia metodologiczne z raportu (metryki na zbiorze `test`,
+  a progi kalibrowane na `val` — dlatego wynik jest uczciwy, choć obarczony
+  niepewnością małej próby).
 
 Raport i obrazy są serwowane wyłącznie z `models/ewaluacja/`; endpointy
 sprawdzają rozszerzenie pliku i odrzucają próby wyjścia poza folder
@@ -183,14 +184,14 @@ w treningu — przerwanie zabija proces potomny i nie zostawia połowy raportu
 procesie i czyta te same maszynowe linie postępu:
 
 ```
-[postep-start] embeddingi 2745
+[postep-start] embeddingi 2467
 [postep] embeddingi 32
 ...
 [postep-start] eksperymenty 21
 ```
 
 Faza `embeddingi` (zdjęcia treningowe w trzech wariantach jasności,
-walidacja i obcy) odpowiada za 0–75% paska, a `eksperymenty` (cztery
+walidacja, test i obcy) odpowiada za 0–75% paska, a `eksperymenty` (cztery
 eksperymenty, wykresy, CSV i zapis raportu) za 75–97%. Po sukcesie pasek
 pokazuje 100%, a panel odświeża raport.
 
@@ -203,7 +204,9 @@ Zakładka **Eksperymenty** pokazuje:
 - tabelę wszystkich wariantów: liczba zdjęć, accuracy, FAR, FRR, EER, AUC,
 - cztery wykresy PNG (liczba zdjęć, jasność, `k` w k-NN, próg decyzyjny),
 - automatyczne wnioski wygenerowane przez `08` oraz ostrzeżenia
-  metodologiczne (próg EER wybierany na `val`, więc wyniki są optymistyczne).
+  metodologiczne (metryki na zbiorze testowym, próg EER wybierany na
+  walidacji — wynik jest uczciwy, ale przy małej próbie różnice 1–2 pkt
+  proc. mogą być szumem).
 
 Raport, CSV i wykresy są serwowane wyłącznie z `models/eksperymenty/`;
 endpoint `/api/eksperymenty/wykres/<n>` sprawdza rozszerzenie pliku

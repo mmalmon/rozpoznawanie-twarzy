@@ -33,16 +33,22 @@ To swietna lekcja: te same cechy (embeddingi) + rozne sposoby decyzji =
 rozne wyniki. Deep learning nie zawsze musi byc ostatnim slowem.
 
 WYMAGANIA:
-  - data/processed/train i data/processed/val (uruchom 02),
-  - models/wzorce_osob.json (uruchom 03),
-  - najlepiej data/raw/nieznajomy (zdjecia obcych osob do FAR).
+  - data/processed/train, data/processed/val i data/processed/test (uruchom 02),
+  - models/wzorce_osob.json (uruchom 03).
 
-UWAGA METODOLOGICZNA (bardzo wazna):
-  Zbior walidacyjny (val) byl juz uzyty w skrypcie 03 do KALIBRACJI PROGOW.
-  Oceniamy wiec na danych, ktore model "widzial" posrednio - wyniki sa
-  OPTYMISTYCZNE. Do rzetelnej oceny trzeba osobnego zbioru TESTOWEGO, ktorego
-  nie uzyto ani do treningu, ani do kalibracji. Skrypt wypisuje to ostrzezenie
-  takze w raporcie JSON.
+JAK DZIELIMY ROLE ZBIOROW (to jest sedno metodologii):
+  - train - z niego skrypt 03 buduje wzorce,
+  - val   - na nim skrypt 03 kalibruje progi, a ten skrypt wybiera prog EER
+            dla k-NN i regresji logistycznej,
+  - test  - NIGDY nie byl uzyty do uczenia ani do kalibracji; tylko na nim
+            liczymy ostateczne metryki.
+
+Dzieki temu wynik nie jest "dopasowany" do danych, na ktorych wybieralismy
+prog. To roznica miedzy eksperymentem a chwaleniem sie wynikiem.
+
+UWAGA: test jest maly (zwykle kilkadziesiat do kilkuset zdjec), wiec jedna
+pomylka potrafi zmienic wynik o kilka punktow procentowych. To normalne -
+dlatego w raporcie podajemy tez surowe wartosci liczbowe, a nie tylko procenty.
 
 Uzycie:
     python 07_ewaluacja.py
@@ -77,7 +83,6 @@ import torch
 from common.embeddingi import (
     WSPOLCZYNNIKI_JASNOSCI,
     policz_embeddingi_folderu,
-    policz_embeddingi_plaskie,
     policz_obrazy,
     transformacja,
 )
@@ -96,7 +101,6 @@ from common.rozpoznawanie import NAZWA_NIEZNANEJ, wczytaj_wzorce
 
 KORZEN_PROJEKTU = Path(__file__).resolve().parent
 FOLDER_PRZETWORZONYCH_DANYCH = KORZEN_PROJEKTU / "data" / "processed"
-FOLDER_RAW = KORZEN_PROJEKTU / "data" / "raw"
 FOLDER_MODELI = KORZEN_PROJEKTU / "models"
 FOLDER_EWALUACJI = FOLDER_MODELI / "ewaluacja"
 FOLDER_WYKRESOW = FOLDER_EWALUACJI / "wykresy"
@@ -106,7 +110,7 @@ PLIK_RAPORTU = FOLDER_EWALUACJI / "raport_ewaluacji.json"
 
 NAZWA_KLASY_NIEZNAJOMY = "nieznajomy"
 NAZWA_OBCEGO = "obcy (nieznajomy)"
-WERSJA_RAPORTU = 1
+WERSJA_RAPORTU = 2
 
 
 # =========================================================================
@@ -495,12 +499,12 @@ def main() -> None:
 
     folder_train = FOLDER_PRZETWORZONYCH_DANYCH / "train"
     folder_val = FOLDER_PRZETWORZONYCH_DANYCH / "val"
-    folder_obcych = FOLDER_RAW / NAZWA_KLASY_NIEZNAJOMY
+    folder_test = FOLDER_PRZETWORZONYCH_DANYCH / "test"
 
-    if not folder_train.is_dir() or not folder_val.is_dir():
+    if not folder_train.is_dir() or not folder_val.is_dir() or not folder_test.is_dir():
         raise SystemExit(
-            f"Brak danych w {FOLDER_PRZETWORZONYCH_DANYCH}. "
-            "Najpierw uruchom 02_podzial_danych.py."
+            f"Brak kompletu zbiorow w {FOLDER_PRZETWORZONYCH_DANYCH} "
+            "(potrzebne train, val i test). Uruchom ponownie 02_podzial_danych.py."
         )
     if not PLIK_WZORCOW.exists():
         raise SystemExit(
@@ -526,11 +530,11 @@ def main() -> None:
 
     liczba_train = policz_obrazy(folder_train)
     liczba_val = policz_obrazy(folder_val)
-    liczba_obcych = policz_obrazy(folder_obcych)
+    liczba_test = policz_obrazy(folder_test)
     postep = Postep(argumenty.postep)
     postep.start(
         "embeddingi",
-        liczba_train * len(WSPOLCZYNNIKI_JASNOSCI) + liczba_val + liczba_obcych,
+        liczba_train * len(WSPOLCZYNNIKI_JASNOSCI) + liczba_val + liczba_test,
     )
 
     # ---------------------------------------------------------- trening
@@ -538,8 +542,9 @@ def main() -> None:
     embeddingi_warianty: list[torch.Tensor] = []
     etykiety_trening: list[int] = []
     klasy_trening: list[str] = []
+    sciezki_trening_oryginal: list[Path] = []
     for jasnosc in WSPOLCZYNNIKI_JASNOSCI:
-        embeddingi, etykiety, klasy, _ = policz_embeddingi_folderu(
+        embeddingi, etykiety, klasy, sciezki = policz_embeddingi_folderu(
             ekstraktor,
             folder_train,
             urzadzenie,
@@ -552,6 +557,8 @@ def main() -> None:
             etykiety_trening = etykiety
         elif klasy != klasy_trening:
             raise SystemExit("Lista klas zmienila sie podczas czytania danych treningowych.")
+        if jasnosc == 1.0:
+            sciezki_trening_oryginal = sciezki
         embeddingi_warianty.append(embeddingi)
 
     indeks_oryginalu = WSPOLCZYNNIKI_JASNOSCI.index(1.0)
@@ -564,8 +571,10 @@ def main() -> None:
     )
 
     # -------------------------------------------------------- walidacja
-    print("[info] Liczenie embeddingow zbioru walidacyjnego...")
-    embeddingi_val, etykiety_val, klasy_val, sciezki_val = policz_embeddingi_folderu(
+    # Val sluzy TYLKO do wyboru progu (03 robi to dla prototypow, a ten
+    # skrypt dla k-NN i regresji). Nie raportujemy na nim metryk.
+    print("[info] Liczenie embeddingow walidacji (wybor progow)...")
+    embeddingi_val, etykiety_val, klasy_val, _ = policz_embeddingi_folderu(
         ekstraktor,
         folder_val,
         urzadzenie,
@@ -574,7 +583,7 @@ def main() -> None:
         postep,
     )
     prawdziwe_val = [klasy_val[etykieta] for etykieta in etykiety_val]
-    indeksy_znane = [
+    indeksy_znane_val = [
         numer for numer, prawdziwa in enumerate(prawdziwe_val) if prawdziwa in osoby
     ]
     indeksy_obce_val = [
@@ -582,37 +591,90 @@ def main() -> None:
         for numer, prawdziwa in enumerate(prawdziwe_val)
         if prawdziwa == NAZWA_KLASY_NIEZNAJOMY
     ]
-    if not indeksy_znane:
+    if not indeksy_znane_val:
         raise SystemExit(
             "W zbiorze walidacyjnym nie ma zadnej osoby z pliku wzorcow. "
             "Uruchom ponownie 02 i 03."
         )
-
-    embeddingi_znane = embeddingi_val[indeksy_znane]
-    prawdziwe_znane = [prawdziwe_val[numer] for numer in indeksy_znane]
-    sciezki_znane = [sciezki_val[numer] for numer in indeksy_znane]
-    indeksy_prawdziwe = [osoby.index(osoba) for osoba in prawdziwe_znane]
+    embeddingi_val_znane = embeddingi_val[indeksy_znane_val]
+    indeksy_prawdziwe_val = [
+        osoby.index(prawdziwe_val[numer]) for numer in indeksy_znane_val
+    ]
+    embeddingi_val_obce = embeddingi_val[indeksy_obce_val]
     print(
-        f"[info] Walidacja: {len(prawdziwe_znane)} zdjec znanych osob, "
+        f"[info] Walidacja: {len(indeksy_znane_val)} zdjec znanych osob, "
         f"{len(indeksy_obce_val)} zdjec klasy 'nieznajomy'."
     )
 
-    # ---------------------------------------------------------- obcy
-    if folder_obcych.is_dir():
-        print("[info] Liczenie embeddingow obcych twarzy (data/raw/nieznajomy)...")
-        embeddingi_obce, sciezki_obce = policz_embeddingi_plaskie(
-            ekstraktor,
-            folder_obcych,
-            urzadzenie,
-            argumenty.batch_size,
-            transformacja(1.0),
-            postep,
+    # ------------------------------------------------------------- test
+    print("[info] Liczenie embeddingow zbioru testowego...")
+    embeddingi_test, etykiety_test, klasy_test, sciezki_test = policz_embeddingi_folderu(
+        ekstraktor,
+        folder_test,
+        urzadzenie,
+        argumenty.batch_size,
+        transformacja(1.0),
+        postep,
+    )
+    prawdziwe_test = [klasy_test[etykieta] for etykieta in etykiety_test]
+    indeksy_znane_test = [
+        numer for numer, prawdziwa in enumerate(prawdziwe_test) if prawdziwa in osoby
+    ]
+    indeksy_obce_test = [
+        numer
+        for numer, prawdziwa in enumerate(prawdziwe_test)
+        if prawdziwa == NAZWA_KLASY_NIEZNAJOMY
+    ]
+    if not indeksy_znane_test:
+        raise SystemExit(
+            "W zbiorze testowym nie ma zadnej osoby z pliku wzorcow. "
+            "Uruchom ponownie 02 i 03."
         )
+
+    embeddingi_znane = embeddingi_test[indeksy_znane_test]
+    prawdziwe_znane = [prawdziwe_test[numer] for numer in indeksy_znane_test]
+    sciezki_znane = [sciezki_test[numer] for numer in indeksy_znane_test]
+    indeksy_prawdziwe = [osoby.index(osoba) for osoba in prawdziwe_znane]
+    print(
+        f"[info] Test: {len(prawdziwe_znane)} zdjec znanych osob, "
+        f"{len(indeksy_obce_test)} zdjec klasy 'nieznajomy'."
+    )
+
+    # ---------------------------------------------------------- obcy
+    # Zdjecia "nieznajomy" ze zbioru treningowego i testowego. Val jest
+    # celowo pominieta, bo jej zdjecia posluzyly do kalibracji progow -
+    # wliczenie ich tutaj zawyzyloby FAR w optymistyczna strone.
+    maska_obcych_trening = torch.tensor(
+        [
+            klasy_trening[etykieta] == NAZWA_KLASY_NIEZNAJOMY
+            for etykieta in etykiety_trening
+        ],
+        dtype=torch.bool,
+    )
+    czesci_obce: list[torch.Tensor] = []
+    sciezki_obce: list[Path] = []
+    if bool(maska_obcych_trening.any()):
+        czesci_obce.append(embeddingi_trening_oryginal[maska_obcych_trening])
+        sciezki_obce.extend(
+            sciezka
+            for sciezka, czy_obcy in zip(
+                sciezki_trening_oryginal, maska_obcych_trening.tolist()
+            )
+            if czy_obcy
+        )
+    if indeksy_obce_test:
+        czesci_obce.append(embeddingi_test[indeksy_obce_test])
+        sciezki_obce.extend(sciezki_test[numer] for numer in indeksy_obce_test)
+
+    if czesci_obce:
+        embeddingi_obce = torch.cat(czesci_obce, dim=0)
     else:
-        print("[uwaga] Brak folderu data/raw/nieznajomy - nie policze FAR.")
+        print(
+            "[uwaga] Brak zdjec klasy 'nieznajomy' w train/test - "
+            "nie policze FAR. Uruchom pobierz_zdjecia_nieznajomych.py i 02."
+        )
         embeddingi_obce = torch.empty((0, embeddingi_znane.shape[1]))
-        sciezki_obce = []
-    print(f"[info] Obcy: {len(embeddingi_obce)} zdjec.")
+    print(f"[info] Obcy: {len(embeddingi_obce)} zdjec (train + test, bez val).")
 
     # ------------------------------------------------------ prototypy
     postep.start("metryki", 4)
@@ -643,30 +705,51 @@ def main() -> None:
 
     # ---------------------------------------------------------- k-NN
     print(f"[info] Metoda 2/3: k-NN (k={argumenty.k_sasiadow})...")
-    zapytania = torch.cat([embeddingi_znane, embeddingi_obce], dim=0)
-    podobienstwa_knn_wszystkie = podobienstwa_knn(
-        zapytania,
+    # Prog wybieramy na val (punkt EER), a metryki liczymy na test.
+    zapytania_val = torch.cat([embeddingi_val_znane, embeddingi_val_obce], dim=0)
+    pod_knn_val = podobienstwa_knn(
+        zapytania_val,
         embeddingi_trening,
         etykiety_trening_wszystkie,
         klasy_trening,
         osoby,
         argumenty.k_sasiadow,
     )
-    podobienstwa_knn_znane = podobienstwa_knn_wszystkie[: len(embeddingi_znane)]
-    podobienstwa_knn_obce = podobienstwa_knn_wszystkie[len(embeddingi_znane) :]
-    wlasne_knn = podobienstwa_knn_znane[indeksy, indeksy_prawdziwe]
+    pod_knn_val_znane = pod_knn_val[: len(embeddingi_val_znane)]
+    pod_knn_val_obce = pod_knn_val[len(embeddingi_val_znane) :]
+    indeksy_val = np.arange(len(embeddingi_val_znane))
+    wlasne_knn_val = pod_knn_val_znane[indeksy_val, indeksy_prawdziwe_val]
+    obce_knn_val = (
+        pod_knn_val_obce.max(axis=1)
+        if len(pod_knn_val_obce)
+        else np.zeros(0, dtype=float)
+    )
+    krzywa_knn_val = krzywa_i_eer(wlasne_knn_val, obce_knn_val)
+    prog_knn = krzywa_knn_val["prog"] if krzywa_knn_val else 0.5
+
+    zapytania_test = torch.cat([embeddingi_znane, embeddingi_obce], dim=0)
+    pod_knn_test = podobienstwa_knn(
+        zapytania_test,
+        embeddingi_trening,
+        etykiety_trening_wszystkie,
+        klasy_trening,
+        osoby,
+        argumenty.k_sasiadow,
+    )
+    pod_knn_test_znane = pod_knn_test[: len(embeddingi_znane)]
+    pod_knn_test_obce = pod_knn_test[len(embeddingi_znane) :]
+    wlasne_knn = pod_knn_test_znane[indeksy, indeksy_prawdziwe]
     obce_knn = (
-        podobienstwa_knn_obce.max(axis=1)
-        if len(podobienstwa_knn_obce)
+        pod_knn_test_obce.max(axis=1)
+        if len(pod_knn_test_obce)
         else np.zeros(0, dtype=float)
     )
     krzywa_knn = krzywa_i_eer(wlasne_knn, obce_knn)
-    prog_knn = krzywa_knn["prog"] if krzywa_knn else 0.5
     przewidziane_znane_knn, _ = decyzje_z_progiem(
-        podobienstwa_knn_znane, osoby, prog_knn
+        pod_knn_test_znane, osoby, prog_knn
     )
     przewidziane_obce_knn, _ = decyzje_z_progiem(
-        podobienstwa_knn_obce, osoby, prog_knn
+        pod_knn_test_obce, osoby, prog_knn
     )
     metryki_knn = metryki_openset(
         prawdziwe_znane, przewidziane_znane_knn, przewidziane_obce_knn
@@ -676,36 +759,50 @@ def main() -> None:
 
     # ---------------------------------------------- regresja logistyczna
     print("[info] Metoda 3/3: regresja logistyczna na embeddingach...")
+    zapytania_log = torch.cat([zapytania_val, zapytania_test], dim=0)
     podobienstwa_log = _wyniki_logistycznej(
         embeddingi_trening_oryginal,
         etykiety_trening,
         klasy_trening,
-        zapytania,
+        zapytania_log,
         osoby,
         argumenty.seed,
     )
     if podobienstwa_log is not None:
-        podobienstwa_log_znane = podobienstwa_log[: len(embeddingi_znane)]
-        podobienstwa_log_obce = podobienstwa_log[len(embeddingi_znane) :]
-        wlasne_log = podobienstwa_log_znane[indeksy, indeksy_prawdziwe]
+        pod_log_val = podobienstwa_log[: len(zapytania_val)]
+        pod_log_test = podobienstwa_log[len(zapytania_val) :]
+
+        pod_log_val_znane = pod_log_val[: len(embeddingi_val_znane)]
+        pod_log_val_obce = pod_log_val[len(embeddingi_val_znane) :]
+        wlasne_log_val = pod_log_val_znane[indeksy_val, indeksy_prawdziwe_val]
+        obce_log_val = (
+            pod_log_val_obce.max(axis=1)
+            if len(pod_log_val_obce)
+            else np.zeros(0, dtype=float)
+        )
+        krzywa_log_val = krzywa_i_eer(wlasne_log_val, obce_log_val)
+        prog_log = krzywa_log_val["prog"] if krzywa_log_val else 0.5
+
+        pod_log_test_znane = pod_log_test[: len(embeddingi_znane)]
+        pod_log_test_obce = pod_log_test[len(embeddingi_znane) :]
+        wlasne_log = pod_log_test_znane[indeksy, indeksy_prawdziwe]
         obce_log = (
-            podobienstwa_log_obce.max(axis=1)
-            if len(podobienstwa_log_obce)
+            pod_log_test_obce.max(axis=1)
+            if len(pod_log_test_obce)
             else np.zeros(0, dtype=float)
         )
         krzywa_log = krzywa_i_eer(wlasne_log, obce_log)
-        prog_log = krzywa_log["prog"] if krzywa_log else 0.5
         przewidziane_znane_log, _ = decyzje_z_progiem(
-            podobienstwa_log_znane, osoby, prog_log
+            pod_log_test_znane, osoby, prog_log
         )
         przewidziane_obce_log, _ = decyzje_z_progiem(
-            podobienstwa_log_obce, osoby, prog_log
+            pod_log_test_obce, osoby, prog_log
         )
         metryki_log = metryki_openset(
             prawdziwe_znane, przewidziane_znane_log, przewidziane_obce_log
         )
         auc_log = auc(wlasne_log, obce_log)
-        accuracy_log = accuracy_zamknieta(podobienstwa_log_znane, indeksy_prawdziwe)
+        accuracy_log = accuracy_zamknieta(pod_log_test_znane, indeksy_prawdziwe)
     else:
         krzywa_log = None
         prog_log = None
@@ -738,7 +835,7 @@ def main() -> None:
         {
             "metoda": f"k-NN (k={argumenty.k_sasiadow})",
             "accuracy_zamknieta": round(
-                accuracy_zamknieta(podobienstwa_knn_znane, indeksy_prawdziwe), 4
+                accuracy_zamknieta(pod_knn_test_znane, indeksy_prawdziwe), 4
             ),
             "accuracy": metryki_knn["accuracy"],
             "far": metryki_knn["far"],
@@ -824,23 +921,26 @@ def main() -> None:
     # ---------------------------------------------------------- raport
     czas = time.perf_counter() - start
     ostrzezenia = [
-        "Zbior walidacyjny (val) byl uzyty w skrypcie 03 do kalibracji progow, "
-        "wiec metryki sa OPTYMISTYCZNE. Do rzetelnej oceny potrzebny jest osobny "
-        "zbior testowy, ktorego nie uzyto ani do treningu, ani do kalibracji.",
-        "Prog decyzyjny dla k-NN i regresji logistycznej zostal wybrany na tym "
-        "samym zbiorze walidacyjnym (punkt EER), dlatego ich FAR/FRR rowniez sa "
-        "optymistyczne i nie sa w pelni porownywalne z progami z 03.",
+        "Metryki policzono na zbiorze TESTOWYM, ktorego nie uzyto ani do "
+        "budowy wzorcow, ani do kalibracji progow. To najbardziej rzetelny "
+        "wynik, jaki potrafi dac ten projekt.",
+        "Progi prototypow pochodza z 03 i byly kalibrowane na zbiorze "
+        "walidacyjnym. Prog EER dla k-NN i regresji logistycznej wybrano na "
+        "walidacji i zastosowano bez zmian do testu - dlatego te metody sa "
+        "uczciwie porownywalne z prototypami.",
+        "Zbior testowy jest maly (kilkadziesiat zdjec), wiec pojedyncza "
+        "pomylka zmienia wynik o kilka punktow procentowych. Nie traktuj "
+        "roznicy 1-2 punktow jako dowodu, ze jedna metoda jest lepsza.",
     ]
-    if folder_obcych.is_dir():
+    if len(embeddingi_obce):
         ostrzezenia.append(
-            "Zdjecia obcych pochodza z data/raw/nieznajomy. Czesc z nich mogla "
-            "byc uzyta w kalibracji progow (val), dlatego FAR jest zawyzony "
-            "w optymistyczna strone."
+            "Zdjecia obcych pochodza z klas 'nieznajomy' w zbiorach train i "
+            "test (celowo bez val, ktory sluzyl do kalibracji progow)."
         )
     else:
         ostrzezenia.append(
-            "Brak folderu data/raw/nieznajomy - nie policzono FAR, EER ani AUC. "
-            "Uruchom pobierz_zdjecia_nieznajomych.py."
+            "Brak zdjec klasy 'nieznajomy' w train/test - nie policzono FAR, "
+            "EER ani AUC. Uruchom pobierz_zdjecia_nieznajomych.py i 02."
         )
 
     raport = {
@@ -854,14 +954,21 @@ def main() -> None:
                 "zdjecia": len(etykiety_trening),
                 "embeddingi": len(etykiety_trening_wszystkie),
                 "warianty_jasnosci": list(WSPOLCZYNNIKI_JASNOSCI),
+                "rola": "budowa wzorcow (03)",
             },
             "walidacja": {
+                "zdjecia_znanych": len(indeksy_znane_val),
+                "zdjecia_nieznajomych": len(indeksy_obce_val),
+                "rola": "kalibracja progow (03) i wybor progu EER dla k-NN oraz regresji",
+            },
+            "test": {
                 "zdjecia_znanych": len(prawdziwe_znane),
-                "zdjecia_nieznajomych_w_val": len(indeksy_obce_val),
+                "zdjecia_nieznajomych": len(indeksy_obce_test),
+                "rola": "ostateczny pomiar metryk (bez udzialu w uczeniu i kalibracji)",
             },
             "obcy": {
                 "zdjecia": len(embeddingi_obce),
-                "zrodlo": "data/raw/nieznajomy",
+                "zrodlo": "data/processed/{train,test}/nieznajomy",
             },
             "wymiar_cech": int(embeddingi_znane.shape[1]),
             "ostrzezenia": ostrzezenia,
@@ -888,7 +995,7 @@ def main() -> None:
             "prog": prog_knn,
             "metryki": metryki_knn,
             "accuracy_zamknieta": round(
-                accuracy_zamknieta(podobienstwa_knn_znane, indeksy_prawdziwe), 4
+                accuracy_zamknieta(pod_knn_test_znane, indeksy_prawdziwe), 4
             ),
             "eer": krzywa_knn["eer"] if krzywa_knn else None,
             "auc": auc_knn,
@@ -917,7 +1024,7 @@ def main() -> None:
 
     # ------------------------------------------------------- podsumowanie
     print("\n" + "=" * 68)
-    print("PODSUMOWANIE EWALUACJI (prototypy, progi z 03)")
+    print("PODSUMOWANIE EWALUACJI (zbior testowy, prototypy z progami z 03)")
     print("=" * 68)
     print(f"  Accuracy: {metryki_proto['accuracy']:.1%}  ({metryki_proto['poprawne']}/{metryki_proto['liczba_znanych']})")
     print(f"  FAR:      {metryki_proto['far']:.1%}" if metryki_proto["far"] is not None else "  FAR:      brak danych")
@@ -937,7 +1044,15 @@ def main() -> None:
     print(f"[gotowe] Raport: {PLIK_RAPORTU}")
     print(f"[gotowe] Wykresy: {FOLDER_WYKRESOW}")
     print(f"[gotowe] Galeria pomylek: {FOLDER_POMYLEK} ({len(pomylki)} zdjec)")
-    print("[uwaga] Metryki sa optymistyczne - val byl uzyty do kalibracji progow.")
+    print(
+        f"[info] Test: {len(prawdziwe_znane)} zdjec znanych osob + "
+        f"{len(przewidziane_obce_proto)} zdjec obcych."
+    )
+    print(
+        "[uwaga] Metryki pochodza ze zbioru testowego, ktorego nie uzyto do "
+        "uczenia ani kalibracji progow - to wynik uczciwy, ale obarczony "
+        "niepewnoscia malej proby."
+    )
 
 
 if __name__ == "__main__":

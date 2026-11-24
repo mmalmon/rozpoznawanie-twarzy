@@ -32,6 +32,7 @@ PLIK_RAPORTU = FOLDER_EKSPERYMENTOW / "raport_eksperymentow.json"
 SKRYPT_EKSPERYMENTOW = KORZEN_PROJEKTU / "08_eksperymenty.py"
 FOLDER_TRENINGU = KORZEN_PROJEKTU / "data" / "processed" / "train"
 FOLDER_WALIDACJI = KORZEN_PROJEKTU / "data" / "processed" / "val"
+FOLDER_TESTOWY = KORZEN_PROJEKTU / "data" / "processed" / "test"
 
 STAN_BEZCZYNNY = "bezczynny"
 STAN_DZIALA = "dziala"
@@ -100,9 +101,22 @@ class MenedzerEksperymentow:
         """Wczesna walidacja: lepiej powiedzieć od razu, czego brakuje."""
         if not SKRYPT_EKSPERYMENTOW.exists():
             return "Brak pliku 08_eksperymenty.py."
-        for folder, nazwa in (
-            (FOLDER_TRENINGU, "treningowy"),
-            (FOLDER_WALIDACJI, "walidacyjny"),
+        for folder, nazwa, podpowiedz in (
+            (
+                FOLDER_TRENINGU,
+                "treningowego",
+                "Najpierw uruchom trening — skrypt 02 podzieli dane.",
+            ),
+            (
+                FOLDER_WALIDACJI,
+                "walidacyjnego",
+                "Uruchom trening — skrypt 02 podzieli dane.",
+            ),
+            (
+                FOLDER_TESTOWY,
+                "testowego",
+                "Uruchom ponownie trening — skrypt 02 doda nowy zbiór testowy.",
+            ),
         ):
             if not folder.is_dir() or not any(
                 podfolder.is_dir() and any(podfolder.iterdir())
@@ -110,7 +124,7 @@ class MenedzerEksperymentow:
             ):
                 return (
                     f"Brak zbioru {nazwa} (data/processed/{folder.name}). "
-                    "Najpierw uruchom trening — skrypt 02 podzieli dane."
+                    f"{podpowiedz}"
                 )
         return None
 

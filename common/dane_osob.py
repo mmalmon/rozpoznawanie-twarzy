@@ -56,6 +56,7 @@ def sciezki_do_usuniecia(osoba: str) -> list[Path]:
         FOLDER_RAW / osoba,
         FOLDER_PROCESSED / "train" / osoba,
         FOLDER_PROCESSED / "val" / osoba,
+        FOLDER_PROCESSED / "test" / osoba,
     ]
     return [s for s in kandydaci if s.exists()]
 

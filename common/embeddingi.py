@@ -92,7 +92,7 @@ def policz_embeddingi_folderu(
     transform,
     postep: LicznikPostepu | None = None,
 ) -> tuple[torch.Tensor, list[int], list[str], list[Path]]:
-    """Liczy embeddingi zdjęć z folderu z podfolderami-klasami (train/val).
+    """Liczy embeddingi zdjęć z folderu z podfolderami-klasami (train/val/test).
 
     Zwraca: macierz [N, D], etykiety liczbowe, nazwy klas i ścieżki plików
     w tej samej kolejności co wiersze macierzy.

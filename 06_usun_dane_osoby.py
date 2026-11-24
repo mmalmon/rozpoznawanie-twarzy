@@ -1,6 +1,6 @@
 """Usuwa dane wybranych osob (np. po lekcji z pokazem) i przelicza wzorce.
 
-Kasuje: data/raw/<osoba>, data/processed/{train,val}/<osoba>, nieuzywane
+Kasuje: data/raw/<osoba>, data/processed/{train,val,test}/<osoba>, nieuzywane
 stare pliki modelu, a potem uruchamia ponownie 02_podzial_danych.py i
 03_trenowanie_modelu.py na pozostalych danych (wzorce nie zawieraja juz
 usunietych osob). Domyslnie tylko POKAZUJE, co zostanie usuniete;

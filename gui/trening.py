@@ -3,7 +3,7 @@
 Panel nie liczy wzorców sam — uruchamia dokładnie te same skrypty, których
 używa się z konsoli. Ten moduł:
 
-1. startuje `02_podzial_danych.py` (podział zdjęć na train/val),
+1. startuje `02_podzial_danych.py` (podział zdjęć na train/val/test),
 2. potem `03_trenowanie_modelu.py --postep` (embeddingi + kalibracja progów),
 3. czyta na bieżąco ich wyjście, zamienia linie `[postep-start]`/`[postep]`
    na procenty i pokazuje log w panelu,

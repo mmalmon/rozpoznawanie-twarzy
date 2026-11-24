@@ -1126,6 +1126,7 @@
       '</div>' +
       `<p class="small text-muted mt-2 mb-0">Osoby: ${escapeHtml((informacje.osoby || []).join(', ') || '—')}` +
       ` · trening: ${informacje.trening ? informacje.trening.zdjecia : '—'} zdjęć` +
+      ` · test: ${informacje.test ? informacje.test.zdjecia_znanych : '—'} zdjęć` +
       ` · obcy: ${informacje.obcy ? informacje.obcy.zdjecia : '—'} zdjęć</p>`;
 
     const naOsobe = Object.entries(prototypy.na_osobe || {});
@@ -1213,7 +1214,7 @@
               `<p class="${indeks === ostrzezenia.length - 1 ? 'mb-0' : 'mb-1'}">${escapeHtml(tekst)}</p>`,
           )
           .join('')
-      : 'Ewaluacja korzysta ze zbioru walidacyjnego — wyniki są optymistyczne.';
+      : 'Ewaluacja raportuje na zbiorze testowym — prog kalibrowano na walidacji.';
   }
 
   async function odswiezRaportEwaluacji() {
@@ -1363,6 +1364,7 @@
         (informacje.osoby || []).join(', ') || '—',
       )}` +
       ` · trening: ${informacje.zdjecia_treningowe_razem ?? '—'} zdjęć` +
+      ` · test: ${informacje.test ? informacje.test.zdjecia_znanych : '—'} zdjęć` +
       ` · obcy: ${informacje.obcy ? informacje.obcy.zdjecia : '—'} zdjęć` +
       ` · czas: ${formatuj(dane.czas_s, 0)} s</p>`;
 
@@ -1433,7 +1435,7 @@
               `<p class="${indeks === ostrzezenia.length - 1 ? 'mb-0' : 'mb-1'}">${escapeHtml(tekst)}</p>`,
           )
           .join('')
-      : 'Eksperymenty wybierają próg na zbiorze walidacyjnym — wyniki są optymistyczne.';
+      : 'Eksperymenty raportują na zbiorze testowym — próg wybrano na walidacji.';
   }
 
   async function odswiezRaportEksperymentow() {
