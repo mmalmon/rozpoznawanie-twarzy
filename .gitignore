@@ -1,6 +1,8 @@
 # Dane treningowe i wyniki treningu - nie commitujemy zdjec uczniow ani modeli
 data/raw/*
 !data/raw/.gitkeep
+data/raw_test/*
+!data/raw_test/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
 models/*

@@ -30,7 +30,6 @@ FOLDER_WYKRESOW = FOLDER_EWALUACJI / "wykresy"
 FOLDER_POMYLEK = FOLDER_EWALUACJI / "pomylki"
 PLIK_RAPORTU = FOLDER_EWALUACJI / "raport_ewaluacji.json"
 
-SKRYPT_EWALUACJI = KORZEN_PROJEKTU / "07_ewaluacja.py"
 PLIK_WZORCOW = KORZEN_PROJEKTU / "models" / "wzorce_osob.json"
 FOLDER_WALIDACJI = KORZEN_PROJEKTU / "data" / "processed" / "val"
 FOLDER_TESTOWY = KORZEN_PROJEKTU / "data" / "processed" / "test"
@@ -43,16 +42,29 @@ STAN_PRZERWANY = "przerwany"
 
 MAKS_LINII_LOGU = 500
 
-# Udział faz w pasku postępu. Liczenie embeddingów to najdłuższa część,
-# a metryki, wykresy i zapis raportu - krótka końcówka.
-WAGI_FAZ = {
-    "embeddingi": (0.0, 82.0),
-    "metryki": (82.0, 97.0),
-}
-
 
 class MenedzerEwaluacji:
-    """Steruje procesem ewaluacji i udostępnia jego stan dla API."""
+    """Steruje procesem ewaluacji i udostępnia jego stan dla API.
+
+    Klasa bazowa dla innych skryptów raportowych (np. testu trudnego).
+    Podklasa ustawia atrybuty klasy: NAZWA, SKRYPT, OPIS_SKRYPTU,
+    PLIK_RAPORTU, WAGI_FAZ i ETAP_START, a w razie potrzeby nadpisuje
+    _sprawdz_dane() oraz DODATKOWE_ARGUMENTY.
+    """
+
+    NAZWA = "Ewaluacja"
+    SKRYPT = KORZEN_PROJEKTU / "07_ewaluacja.py"
+    OPIS_SKRYPTU = "07_ewaluacja.py"
+    PLIK_RAPORTU = FOLDER_EWALUACJI / "raport_ewaluacji.json"
+    ETAP_START = "Przygotowanie (07)"
+    DODATKOWE_ARGUMENTY: tuple[str, ...] = ()
+
+    # Udział faz w pasku postępu. Liczenie embeddingów to najdłuższa część,
+    # a metryki, wykresy i zapis raportu - krótka końcówka.
+    WAGI_FAZ = {
+        "embeddingi": (0.0, 82.0),
+        "metryki": (82.0, 97.0),
+    }
 
     def __init__(self, po_zakonczeniu: Callable[[bool], None] | None = None) -> None:
         self._zamek = threading.Lock()
@@ -76,7 +88,7 @@ class MenedzerEwaluacji:
         """Uruchamia ewaluację w tle. Rzuca RuntimeError, gdy nie można."""
         with self._zamek:
             if self._stan == STAN_DZIALA:
-                raise RuntimeError("Ewaluacja już trwa.")
+                raise RuntimeError(f"{self.NAZWA} już trwa.")
 
         brak = self._sprawdz_dane()
         if brak:
@@ -84,7 +96,7 @@ class MenedzerEwaluacji:
 
         with self._zamek:
             self._stan = STAN_DZIALA
-            self._etap = "Przygotowanie (07)"
+            self._etap = self.ETAP_START
             self._postep = 0.0
             self._blad = None
             self._log.clear()
@@ -100,8 +112,8 @@ class MenedzerEwaluacji:
 
     def _sprawdz_dane(self) -> str | None:
         """Wczesna walidacja: lepiej powiedzieć od razu, czego brakuje."""
-        if not SKRYPT_EWALUACJI.exists():
-            return "Brak pliku 07_ewaluacja.py."
+        if not self.SKRYPT.exists():
+            return f"Brak pliku {self.OPIS_SKRYPTU}."
         if not PLIK_WZORCOW.exists():
             return (
                 "Brak wytrenowanych wzorców (models/wzorce_osob.json). "
@@ -161,10 +173,15 @@ class MenedzerEwaluacji:
         if os.name == "nt":
             flagi = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-        self._dopisz_log("[panel] Uruchamiam 07_ewaluacja.py --postep")
+        self._dopisz_log(f"[panel] Uruchamiam {self.OPIS_SKRYPTU} --postep")
         try:
             proces = subprocess.Popen(
-                [sys.executable, str(SKRYPT_EWALUACJI), "--postep"],
+                [
+                    sys.executable,
+                    str(self.SKRYPT),
+                    "--postep",
+                    *self.DODATKOWE_ARGUMENTY,
+                ],
                 cwd=str(KORZEN_PROJEKTU),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -176,7 +193,9 @@ class MenedzerEwaluacji:
                 creationflags=flagi,
             )
         except OSError as blad:
-            self._zakoncz_bledem(f"Nie udało się uruchomić 07_ewaluacja.py: {blad}")
+            self._zakoncz_bledem(
+                f"Nie udało się uruchomić {self.OPIS_SKRYPTU}: {blad}"
+            )
             return False
 
         with self._zamek:
@@ -204,7 +223,7 @@ class MenedzerEwaluacji:
             if przerwano:
                 return False
             self._zakoncz_bledem(
-                f"07_ewaluacja.py zakończył się kodem {kod}. Szczegóły w logu."
+                f"{self.OPIS_SKRYPTU} zakończył się kodem {kod}. Szczegóły w logu."
             )
             return False
         return True
@@ -236,9 +255,9 @@ class MenedzerEwaluacji:
             with self._zamek:
                 faza = self._faza
                 total = self._faza_total
-                if total <= 0 or faza not in WAGI_FAZ:
+                if total <= 0 or faza not in self.WAGI_FAZ:
                     return
-                poczatek, koniec = WAGI_FAZ[faza]
+                poczatek, koniec = self.WAGI_FAZ[faza]
                 ulamek = min(1.0, max(0.0, zrobione / total))
                 postep = poczatek + ulamek * (koniec - poczatek)
             self._aktualizuj(postep=postep)
@@ -255,7 +274,7 @@ class MenedzerEwaluacji:
             # informacji o przerwaniu.
             self._stan = STAN_PRZERWANY
             self._etap = "Przerwano"
-            self._blad = "Ewaluacja została przerwana przez użytkownika."
+            self._blad = "Zadanie zostało przerwane przez użytkownika."
             self._czas_konca = time.monotonic()
 
         if proces is not None and proces.poll() is None:
@@ -268,7 +287,7 @@ class MenedzerEwaluacji:
                 except OSError:
                     pass
 
-        self._dopisz_log("[panel] Ewaluacja przerwana przez użytkownika.")
+        self._dopisz_log("[panel] Zadanie przerwane przez użytkownika.")
 
         watek = self._watek
         if (
@@ -289,12 +308,12 @@ class MenedzerEwaluacji:
                 koniec = self._czas_konca or teraz
                 czas = max(0.0, koniec - self._czas_startu)
 
-            raport_dostepny = PLIK_RAPORTU.exists()
+            raport_dostepny = self.PLIK_RAPORTU.exists()
             czas_raportu = None
             if raport_dostepny:
                 try:
                     czas_raportu = datetime.fromtimestamp(
-                        PLIK_RAPORTU.stat().st_mtime
+                        self.PLIK_RAPORTU.stat().st_mtime
                     ).isoformat(timespec="seconds")
                 except OSError:
                     czas_raportu = None

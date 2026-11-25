@@ -4,6 +4,7 @@ Krok 1: Zbieranie materialu treningowego z kamery RoWave RC16.
 Uzycie:
     python 01_zbieranie_danych.py --osoba jan_kowalski
     python 01_zbieranie_danych.py --osoba jan_kowalski --kamera 1 --cel 250
+    python 01_zbieranie_danych.py --osoba jan_kowalski --folder data/raw_test
 
 Jesli nie podasz --kamera, program wykryje dostepne kamery i zapyta,
 ktorej uzyc (przydatne, gdy laptop ma zarowno kamere wbudowana, jak i
@@ -16,6 +17,11 @@ Sterowanie w oknie podgladu:
 
 Zdjecia zapisywane sa jako wyciete i przeskalowane kwadraty twarzy (224x224)
 w folderze data/raw/<osoba>/.
+
+DLA TESTU TRUDNEGO: parametr --folder pozwala zapisac zdjecia gdzie indziej,
+np. `--folder data/raw_test`. Tak zebrany zestaw (inny dzien, inne swiatlo,
+inne urzadzenie) sluzy potem skryptowi 09_test_trudny.py - NIE trafia do
+treningu i nie jest mieszany ze zwyklym testem.
 
 Wskazowki dla dobrej jakosci danych (patrz tez README.md):
   - zbierz min. 150-300 zdjec na osobe,
@@ -53,7 +59,6 @@ from common.dane_osob import nastepny_numer_zdjecia, poprawna_nazwa
 from common.face_detector import DetektorTwarzy
 from common.imgio import zapisz_obraz
 
-FOLDER_DANYCH = Path(__file__).parent / "data" / "raw"
 DOCELOWY_ROZMIAR = (224, 224)
 
 
@@ -67,6 +72,14 @@ def parsuj_argumenty() -> argparse.Namespace:
         help="Indeks kamery. Jesli pominiety, program zapyta interaktywnie.",
     )
     parser.add_argument("--cel", type=int, default=250, help="Docelowa liczba zdjec do zebrania")
+    parser.add_argument(
+        "--folder",
+        default="data/raw",
+        help=(
+            "Folder docelowy. Dla testu trudnego uzyj data/raw_test "
+            "(domyslnie data/raw - zbior treningowy)"
+        ),
+    )
     parser.add_argument(
         "--szerokosc", type=int, default=1920, help="Szerokosc podgladu z kamery (px)"
     )
@@ -93,7 +106,10 @@ def main() -> None:
     # ewentualnymi brakujacymi folderami nadrzednymi) - "exist_ok=True"
     # oznacza, ze NIE zglosi bledu, jesli folder juz istnieje (np. gdy
     # dogrywamy kolejne zdjecia do wczesniej rozpoczetego zbioru).
-    folder_osoby = FOLDER_DANYCH / argumenty.osoba
+    folder_bazowy = Path(argumenty.folder)
+    if not folder_bazowy.is_absolute():
+        folder_bazowy = Path(__file__).parent / folder_bazowy
+    folder_osoby = folder_bazowy / argumenty.osoba
     folder_osoby.mkdir(parents=True, exist_ok=True)
     # glob("*.jpg") wyszukuje wszystkie pliki o podanym wzorcu nazwy (tu:
     # dowolna nazwa konczaca sie na ".jpg") w danym folderze - liczymy je,

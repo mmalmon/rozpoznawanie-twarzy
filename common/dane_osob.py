@@ -12,6 +12,7 @@ from pathlib import Path
 KORZEN = Path(__file__).resolve().parent.parent
 NAZWA_KLASY_NIEZNAJOMY = "nieznajomy"
 FOLDER_RAW = KORZEN / "data" / "raw"
+FOLDER_RAW_TEST = KORZEN / "data" / "raw_test"
 FOLDER_PROCESSED = KORZEN / "data" / "processed"
 PLIK_WZORCOW = KORZEN / "models" / "wzorce_osob.json"
 
@@ -28,6 +29,8 @@ def lista_osob() -> list[str]:
     nazwy = set()
     if FOLDER_RAW.exists():
         nazwy |= {f.name for f in FOLDER_RAW.iterdir() if f.is_dir()}
+    if FOLDER_RAW_TEST.exists():
+        nazwy |= {f.name for f in FOLDER_RAW_TEST.iterdir() if f.is_dir()}
     if PLIK_WZORCOW.exists():
         try:
             dane = json.loads(PLIK_WZORCOW.read_text(encoding="utf-8"))
@@ -54,6 +57,7 @@ def nastepny_numer_zdjecia(folder: Path, prefiks: str) -> int:
 def sciezki_do_usuniecia(osoba: str) -> list[Path]:
     kandydaci = [
         FOLDER_RAW / osoba,
+        FOLDER_RAW_TEST / osoba,
         FOLDER_PROCESSED / "train" / osoba,
         FOLDER_PROCESSED / "val" / osoba,
         FOLDER_PROCESSED / "test" / osoba,

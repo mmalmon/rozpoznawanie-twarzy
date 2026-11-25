@@ -24,6 +24,11 @@ Co liczymy?
      lepszy model. To jedna liczba do porownywania metod.
   7. AUC - jak dobrze sam ranking podobienstw rozdziela "swoich" od "obcych"
      (1.0 = idealnie, 0.5 = losowo).
+  8. PRZEDZIALY UFNOSCI - jak pewny jest wynik. Dla odsetkow (accuracy,
+     FAR, FRR) liczymy je metoda Wilsona, dla EER i AUC bootstrapem.
+     Przy malym tescie 100% accuracy nie znaczy "model jest idealny",
+     tylko "ten test nie pokazal bledu". Przedzial mowi, o ile wynik
+     moglby sie zmienic przy innych zdjeciach testowych.
 
 Co porownujemy?
   - PROTOTYPY - obecna metoda projektu: najblizszy zapisany wzorzec osoby.
@@ -95,6 +100,7 @@ from common.metryki import (
     metryki_openset,
     podobienstwa_do_osob,
     podobienstwa_knn,
+    przedzialy_ufnosci,
 )
 from common.model import pobierz_urzadzenie, zbuduj_ekstraktor_cech
 from common.rozpoznawanie import NAZWA_NIEZNANEJ, wczytaj_wzorce
@@ -110,7 +116,7 @@ PLIK_RAPORTU = FOLDER_EWALUACJI / "raport_ewaluacji.json"
 
 NAZWA_KLASY_NIEZNAJOMY = "nieznajomy"
 NAZWA_OBCEGO = "obcy (nieznajomy)"
-WERSJA_RAPORTU = 2
+WERSJA_RAPORTU = 3
 
 
 # =========================================================================
@@ -152,6 +158,12 @@ def parsuj_argumenty() -> argparse.Namespace:
         help="Ile zdjec z bledami zapisac do galerii pomylek (0 = nie zapisuj)",
     )
     parser.add_argument("--seed", type=int, default=42, help="Ziarno losowosci (powtarzalnosc)")
+    parser.add_argument(
+        "--n-bootstrap",
+        type=int,
+        default=400,
+        help="Ile razy losowac probe w przedzialach ufnosci (wiecej = wolniej, dokladniej)",
+    )
     parser.add_argument(
         "--postep",
         action="store_true",
@@ -382,6 +394,99 @@ def _wykres_porownania(porownanie: list[dict], sciezka: Path) -> None:
     plt.close(rysunek)
 
 
+def _tablice_bootstrapu(
+    prawdziwe: list[str],
+    przewidziane_znane: list[str],
+    przewidziane_obce: list[str],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Zamienia decyzje na tablice 0/1 potrzebne do przedzialow ufnosci."""
+    trafienia = np.array(
+        [
+            float(prawdziwa == przewidziana)
+            for prawdziwa, przewidziana in zip(prawdziwe, przewidziane_znane)
+        ],
+        dtype=float,
+    )
+    akceptacje_obcych = np.array(
+        [float(przewidziana != NAZWA_NIEZNANEJ) for przewidziana in przewidziane_obce],
+        dtype=float,
+    )
+    odrzucenia_znanych = np.array(
+        [float(przewidziana == NAZWA_NIEZNANEJ) for przewidziana in przewidziane_znane],
+        dtype=float,
+    )
+    return trafienia, akceptacje_obcych, odrzucenia_znanych
+
+
+def _format_ci(przedzial: list[float] | None, procent: bool = True) -> str:
+    """Krotki opis przedzialu ufnosci, np. '95% CI 97.2-100.0%'."""
+    if not przedzial:
+        return "brak przedzialu"
+    dolny, gorny = przedzial
+    if procent:
+        return f"95% CI {dolny:.1%}-{gorny:.1%}"
+    return f"95% CI {dolny:.3f}-{gorny:.3f}"
+
+
+def _wykres_przedzialow(dane: list[dict], sciezka: Path) -> None:
+    """Dwa panele: accuracy i EER z przedzialami ufnosci (bootstrap)."""
+    plt = _matplotlib()
+    etykiety = [wpis["etykieta"] for wpis in dane]
+    x = np.arange(len(etykiety))
+
+    def _slupki(os, wartosci, przedzialy, kolor, tytul, procent):
+        dolne = np.array(
+            [max(0.0, wartosc - (ci[0] if ci else wartosc)) for wartosc, ci in zip(wartosci, przedzialy)]
+        )
+        gorne = np.array(
+            [max(0.0, (ci[1] if ci else wartosc) - wartosc) for wartosc, ci in zip(wartosci, przedzialy)]
+        )
+        os.bar(x, wartosci, color=kolor, width=0.55)
+        os.errorbar(
+            x,
+            wartosci,
+            yerr=np.vstack([dolne, gorne]),
+            fmt="none",
+            ecolor="#212529",
+            capsize=5,
+            linewidth=1.2,
+        )
+        os.set_xticks(x, etykiety, fontsize=8)
+        os.set_ylim(0, 1)
+        os.set_title(tytul)
+        os.grid(axis="y", alpha=0.25)
+        for numer, wartosc in enumerate(wartosci):
+            os.text(
+                numer,
+                min(0.97, wartosc + 0.04),
+                f"{wartosc:.1%}" if procent else f"{wartosc:.3f}",
+                ha="center",
+                fontsize=8,
+            )
+
+    rysunek, osie = plt.subplots(1, 2, figsize=(11, 4.4))
+    _slupki(
+        osie[0],
+        [wpis["accuracy"] for wpis in dane],
+        [wpis["accuracy_ci"] for wpis in dane],
+        "#0d6efd",
+        "Accuracy (otwarta) z 95% przedzialem ufnosci",
+        True,
+    )
+    _slupki(
+        osie[1],
+        [wpis["eer"] for wpis in dane],
+        [wpis["eer_ci"] for wpis in dane],
+        "#fd7e14",
+        "EER z 95% przedzialem ufnosci (mniej = lepiej)",
+        True,
+    )
+    rysunek.suptitle("Ile warty jest ten wynik? Przedzialy ufnosci bootstrap")
+    rysunek.tight_layout()
+    rysunek.savefig(sciezka, dpi=140)
+    plt.close(rysunek)
+
+
 def _wykres_pca(
     embeddingi_znane: torch.Tensor,
     osoby_znane: list[str],
@@ -496,6 +601,8 @@ def main() -> None:
         raise SystemExit("--k-sasiadow musi byc dodatni.")
     if argumenty.maks_pomylek < 0:
         raise SystemExit("--maks-pomylek nie moze byc ujemny.")
+    if argumenty.n_bootstrap <= 0:
+        raise SystemExit("--n-bootstrap musi byc dodatnie.")
 
     folder_train = FOLDER_PRZETWORZONYCH_DANYCH / "train"
     folder_val = FOLDER_PRZETWORZONYCH_DANYCH / "val"
@@ -701,6 +808,25 @@ def main() -> None:
     )
     krzywa_proto = krzywa_i_eer(wlasne_proto, obce_proto)
     auc_proto = auc(wlasne_proto, obce_proto)
+    trafienia_proto, akceptacje_obce_proto, odrzucenia_znane_proto = _tablice_bootstrapu(
+        prawdziwe_znane, przewidziane_znane_proto, przewidziane_obce_proto
+    )
+    ci_proto = przedzialy_ufnosci(
+        trafienia_proto,
+        akceptacje_obce_proto,
+        odrzucenia_znane_proto,
+        wlasne_proto,
+        obce_proto,
+        n_bootstrap=argumenty.n_bootstrap,
+        seed=argumenty.seed,
+        trafienia_zamknieta=np.array(
+            [
+                float(int(podobienstwa_znane[numer].argmax()) == prawdziwy)
+                for numer, prawdziwy in enumerate(indeksy_prawdziwe)
+            ],
+            dtype=float,
+        ),
+    )
     postep.dodaj(1)
 
     # ---------------------------------------------------------- k-NN
@@ -755,6 +881,25 @@ def main() -> None:
         prawdziwe_znane, przewidziane_znane_knn, przewidziane_obce_knn
     )
     auc_knn = auc(wlasne_knn, obce_knn)
+    trafienia_knn, akceptacje_obce_knn, odrzucenia_znane_knn = _tablice_bootstrapu(
+        prawdziwe_znane, przewidziane_znane_knn, przewidziane_obce_knn
+    )
+    ci_knn = przedzialy_ufnosci(
+        trafienia_knn,
+        akceptacje_obce_knn,
+        odrzucenia_znane_knn,
+        wlasne_knn,
+        obce_knn,
+        n_bootstrap=argumenty.n_bootstrap,
+        seed=argumenty.seed,
+        trafienia_zamknieta=np.array(
+            [
+                float(int(pod_knn_test_znane[numer].argmax()) == prawdziwy)
+                for numer, prawdziwy in enumerate(indeksy_prawdziwe)
+            ],
+            dtype=float,
+        ),
+    )
     postep.dodaj(1)
 
     # ---------------------------------------------- regresja logistyczna
@@ -803,12 +948,32 @@ def main() -> None:
         )
         auc_log = auc(wlasne_log, obce_log)
         accuracy_log = accuracy_zamknieta(pod_log_test_znane, indeksy_prawdziwe)
+        trafienia_log, akceptacje_obce_log, odrzucenia_znane_log = _tablice_bootstrapu(
+            prawdziwe_znane, przewidziane_znane_log, przewidziane_obce_log
+        )
+        ci_log = przedzialy_ufnosci(
+            trafienia_log,
+            akceptacje_obce_log,
+            odrzucenia_znane_log,
+            wlasne_log,
+            obce_log,
+            n_bootstrap=argumenty.n_bootstrap,
+            seed=argumenty.seed,
+            trafienia_zamknieta=np.array(
+                [
+                    float(int(pod_log_test_znane[numer].argmax()) == prawdziwy)
+                    for numer, prawdziwy in enumerate(indeksy_prawdziwe)
+                ],
+                dtype=float,
+            ),
+        )
     else:
         krzywa_log = None
         prog_log = None
         metryki_log = None
         auc_log = None
         accuracy_log = None
+        ci_log = None
     postep.dodaj(1)
 
     # ------------------------------------------------ wspolne podsumowania
@@ -857,6 +1022,34 @@ def main() -> None:
             }
         )
 
+    # ------------------------------------------------- przedzialy ufnosci
+    dane_przedzialow = [
+        {
+            "etykieta": "Prototypy",
+            "accuracy": metryki_proto["accuracy"],
+            "accuracy_ci": ci_proto["metryki"]["accuracy"],
+            "eer": krzywa_proto["eer"] if krzywa_proto else 0.0,
+            "eer_ci": ci_proto["metryki"]["eer"],
+        },
+        {
+            "etykieta": f"k-NN (k={argumenty.k_sasiadow})",
+            "accuracy": metryki_knn["accuracy"],
+            "accuracy_ci": ci_knn["metryki"]["accuracy"],
+            "eer": krzywa_knn["eer"] if krzywa_knn else 0.0,
+            "eer_ci": ci_knn["metryki"]["eer"],
+        },
+    ]
+    if metryki_log is not None and ci_log is not None:
+        dane_przedzialow.append(
+            {
+                "etykieta": "Regresja",
+                "accuracy": metryki_log["accuracy"],
+                "accuracy_ci": ci_log["metryki"]["accuracy"],
+                "eer": krzywa_log["eer"] if krzywa_log else 0.0,
+                "eer_ci": ci_log["metryki"]["eer"],
+            }
+        )
+
     # ------------------------------------------------------- pomylki
     pomylki: list[dict] = []
     for numer, (prawdziwa, przewidziana) in enumerate(
@@ -894,6 +1087,7 @@ def main() -> None:
         "rozklad_podobienstw": "rozklad_podobienstw.png",
         "krzywa_progu": "krzywa_progu.png",
         "porownanie_metod": "porownanie_metod.png",
+        "przedzialy_ufnosci": "przedzialy_ufnosci.png",
     }
     try:
         _wykres_macierzy(macierz, FOLDER_WYKRESOW / wykresy["macierz_pomylek"])
@@ -905,6 +1099,9 @@ def main() -> None:
         )
         _wykres_krzywej(krzywa_proto, FOLDER_WYKRESOW / wykresy["krzywa_progu"])
         _wykres_porownania(porownanie, FOLDER_WYKRESOW / wykresy["porownanie_metod"])
+        _wykres_przedzialow(
+            dane_przedzialow, FOLDER_WYKRESOW / wykresy["przedzialy_ufnosci"]
+        )
         if _wykres_pca(
             embeddingi_znane,
             prawdziwe_znane,
@@ -931,6 +1128,12 @@ def main() -> None:
         "Zbior testowy jest maly (kilkadziesiat zdjec), wiec pojedyncza "
         "pomylka zmienia wynik o kilka punktow procentowych. Nie traktuj "
         "roznicy 1-2 punktow jako dowodu, ze jedna metoda jest lepsza.",
+        "Przedzialy ufnosci policzono metoda Wilsona (odsetki) i bootstrapem "
+        "(EER, AUC). Pokazuja one tylko niepewnosc losowania probki - nie "
+        "poprawiaja tego, ze test moze byc zbyt latwy ani ze pochodzi z "
+        "jednego dnia i warunkow. To dwie rozne rzeczy. Zdegenerowany "
+        "przedzial EER/AUC (np. 0.0-0.0) oznacza, ze w tescie nie ma "
+        "zadnego trudnego przypadku - nie ze model jest doskonaly.",
     ]
     if len(embeddingi_obce):
         ostrzezenia.append(
@@ -982,6 +1185,7 @@ def main() -> None:
             "eer": krzywa_proto["eer"] if krzywa_proto else None,
             "prog_eer": krzywa_proto["prog"] if krzywa_proto else None,
             "auc": auc_proto,
+            "przedzialy_ufnosci": ci_proto,
             "krzywa_progu": krzywa_proto,
             "rozklad": {
                 "wlasne": _histogram(wlasne_proto, (0.0, 1.0)),
@@ -999,6 +1203,7 @@ def main() -> None:
             ),
             "eer": krzywa_knn["eer"] if krzywa_knn else None,
             "auc": auc_knn,
+            "przedzialy_ufnosci": ci_knn,
         },
         "regresja_logistyczna": (
             {
@@ -1008,6 +1213,7 @@ def main() -> None:
                 "accuracy_zamknieta": round(accuracy_log or 0.0, 4),
                 "eer": krzywa_log["eer"] if krzywa_log else None,
                 "auc": auc_log,
+                "przedzialy_ufnosci": ci_log,
             }
             if metryki_log is not None
             else None
@@ -1027,12 +1233,18 @@ def main() -> None:
     print("PODSUMOWANIE EWALUACJI (zbior testowy, prototypy z progami z 03)")
     print("=" * 68)
     print(f"  Accuracy: {metryki_proto['accuracy']:.1%}  ({metryki_proto['poprawne']}/{metryki_proto['liczba_znanych']})")
+    print(f"             {_format_ci(ci_proto['metryki']['accuracy'])}")
     print(f"  FAR:      {metryki_proto['far']:.1%}" if metryki_proto["far"] is not None else "  FAR:      brak danych")
+    if metryki_proto["far"] is not None:
+        print(f"             {_format_ci(ci_proto['metryki']['far'])}")
     print(f"  FRR:      {metryki_proto['frr']:.1%}  ({metryki_proto['odrzucone_znane']} odrzuconych)")
+    print(f"             {_format_ci(ci_proto['metryki']['frr'])}")
     if krzywa_proto:
         print(f"  EER:      {krzywa_proto['eer']:.1%} przy progu {krzywa_proto['prog']:.2f}")
+        print(f"             {_format_ci(ci_proto['metryki']['eer'])}")
     if auc_proto is not None:
         print(f"  AUC:      {auc_proto:.3f}")
+        print(f"             {_format_ci(ci_proto['metryki']['auc'], procent=False)}")
     print("-" * 68)
     for wpis in porownanie:
         print(

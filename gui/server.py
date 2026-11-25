@@ -79,6 +79,11 @@ from gui.eksperymenty import (
     MenedzerEksperymentow,
 )
 from gui.rozpoznawanie import SilnikRozpoznawania
+from gui.test_trudny import (
+    FOLDER_WYKRESOW as FOLDER_WYKRESOW_TESTU_TRUDNEGO,
+    PLIK_RAPORTU as PLIK_RAPORTU_TESTU_TRUDNEGO,
+    MenedzerTestuTrudnego,
+)
 from gui.trening import MenedzerTreningu
 
 ROZSZERZENIA_ZDJEC = {".jpg", ".jpeg", ".png"}
@@ -184,6 +189,9 @@ def utworz_aplikacje(
 
     menedzer_eksperymentow = MenedzerEksperymentow()
     aplikacja.menedzer_eksperymentow = menedzer_eksperymentow  # type: ignore[attr-defined]
+
+    menedzer_testu_trudnego = MenedzerTestuTrudnego()
+    aplikacja.menedzer_testu_trudnego = menedzer_testu_trudnego  # type: ignore[attr-defined]
 
     @aplikacja.after_request
     def _naglowki(odpowiedz):
@@ -349,6 +357,7 @@ def utworz_aplikacje(
             prog = float(dane.get("prog", 0.6))
             proporcja = float(dane.get("proporcja", 0.5))
             cel = int(dane.get("cel", 0))
+            test_trudny = bool(dane.get("test_trudny", False))
         except (TypeError, ValueError):
             return (
                 jsonify({"ok": False, "komunikat": "Parametry muszą być liczbami."}),
@@ -363,6 +372,7 @@ def utworz_aplikacje(
                 tryb=TRYB_ZBIERANIE,
                 osoba=osoba,
                 cel=cel,
+                test_trudny=test_trudny,
             )
         except ValueError as blad:
             return jsonify({"ok": False, "komunikat": str(blad)}), 400
@@ -525,6 +535,67 @@ def utworz_aplikacje(
     @aplikacja.get("/api/eksperymenty/wykres/<nazwa>")
     def eksperymenty_wykres(nazwa: str):
         sciezka = _plik_ewaluacji(FOLDER_WYKRESOW_EKSPERYMENTOW, nazwa)
+        if sciezka is None:
+            return jsonify({"ok": False, "komunikat": "Nie ma takiego wykresu."}), 404
+        return send_file(sciezka, max_age=0)
+
+    # -------------------------------------------------------- test trudny
+    @aplikacja.get("/api/test-trudny/status")
+    def test_trudny_status():
+        return jsonify(menedzer_testu_trudnego.status())
+
+    @aplikacja.post("/api/test-trudny/start")
+    def test_trudny_start():
+        try:
+            menedzer_testu_trudnego.start()
+        except RuntimeError as blad:
+            return jsonify({"ok": False, "komunikat": str(blad)}), 409
+        return jsonify({"ok": True, "status": menedzer_testu_trudnego.status()})
+
+    @aplikacja.post("/api/test-trudny/stop")
+    def test_trudny_stop():
+        przerwano = menedzer_testu_trudnego.zatrzymaj()
+        return jsonify(
+            {
+                "ok": True,
+                "przerwano": przerwano,
+                "status": menedzer_testu_trudnego.status(),
+            }
+        )
+
+    @aplikacja.get("/api/test-trudny/raport")
+    def test_trudny_raport():
+        if not PLIK_RAPORTU_TESTU_TRUDNEGO.is_file():
+            return jsonify(
+                {
+                    "dostepny": False,
+                    "komunikat": "Brak raportu. Uruchom test trudny.",
+                }
+            )
+        try:
+            dane = json.loads(
+                PLIK_RAPORTU_TESTU_TRUDNEGO.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as blad:
+            return (
+                jsonify(
+                    {
+                        "dostepny": False,
+                        "komunikat": f"Raport jest uszkodzony: {blad}",
+                    }
+                ),
+                500,
+            )
+        dane["dostepny"] = True
+        try:
+            dane["mtime"] = int(PLIK_RAPORTU_TESTU_TRUDNEGO.stat().st_mtime)
+        except OSError:
+            dane["mtime"] = 0
+        return jsonify(dane)
+
+    @aplikacja.get("/api/test-trudny/wykres/<nazwa>")
+    def test_trudny_wykres(nazwa: str):
+        sciezka = _plik_ewaluacji(FOLDER_WYKRESOW_TESTU_TRUDNEGO, nazwa)
         if sciezka is None:
             return jsonify({"ok": False, "komunikat": "Nie ma takiego wykresu."}), 404
         return send_file(sciezka, max_age=0)

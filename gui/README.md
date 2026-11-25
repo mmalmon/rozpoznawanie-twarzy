@@ -45,10 +45,11 @@ Panel prowadzi cały proces — nie trzeba już przełączać się do konsoli:
 | --- | --- |
 | **Detekcja na żywo** | Ramki wokół twarzy, procent pewności, FPS, liczba twarzy. Wybór kamery, progu i minimalnej proporcji twarzy. |
 | **Rozpoznawanie** | Wczytuje `models/wzorce_osob.json` w tle i pokazuje imię + podobieństwo. Karta **Wynik rozpoznawania** pokazuje TOP-3 kandydatów: paski podobieństwa i znacznik progu. Suwak **Korekta progu** (jak `--korekta-progu` w `04`). Przełącznik **Wykrywanie emocji** (domyślnie OFF). |
-| **Dodaj twarz** | Zapisuje wycięte twarze 224×224 do `data/raw/<osoba>/` co ok. 0,3 s, z licznikiem i celem. Działa jak automatyczny tryb `01_zbieranie_danych.py`. |
+| **Dodaj twarz** | Zapisuje wycięte twarze 224×224 do `data/raw/<osoba>/` co ok. 0,3 s, z licznikiem i celem. Działa jak automatyczny tryb `01_zbieranie_danych.py`. Przełącznik **Zapisz jako test trudny** kieruje zdjęcia do `data/raw_test/<osoba>/` (osobny zbiór do kroku 7). |
 | **Trening** | Uruchamia `02_podzial_danych.py` (train/val/test), a potem `03_trenowanie_modelu.py --postep` w osobnym procesie. Pasek postępu, etap, log i przycisk **Przerwij**. |
-| **Ewaluacja** | Uruchamia `07_ewaluacja.py --postep` w osobnym procesie. Pokazuje accuracy, FAR/FRR, EER, AUC, metryki na osobę, porównanie metod, wykresy PNG i galerię pomyłek. |
-| **Eksperymenty** | Uruchamia `08_eksperymenty.py --postep` w osobnym procesie. Pokazuje wpływ liczby zdjęć, jasności, `k` w k-NN i progu decyzyjnego: tabelę wyników, cztery wykresy i automatyczne wnioski. |
+| **Ewaluacja** | Uruchamia `07_ewaluacja.py --postep` w osobnym procesie. Pokazuje accuracy, FAR/FRR, EER, AUC, **95% przedziały ufności**, metryki na osobę, porównanie metod, wykresy PNG i galerię pomyłek. |
+| **Eksperymenty** | Uruchamia `08_eksperymenty.py --postep` w osobnym procesie. Pokazuje wpływ liczby zdjęć, jasności, `k` w k-NN i progu decyzyjnego: tabelę wyników (z kolumną CI accuracy), cztery wykresy i automatyczne wnioski. |
+| **Test trudny** | Uruchamia `09_test_trudny.py --postep --folder data/raw_test`. Pokazuje wynik na zdjęciach z innych warunków, porównanie z łatwym testem z `07`, metryki na osobę, CI i wykresy. |
 | **Baza twarzy** | Miniatury, liczba zdjęć, usuwanie osoby (opcjonalnie z ponownym treningiem). |
 | **O projekcie** | Krótka instrukcja i uwagi o prywatności / AI Act. |
 
@@ -68,8 +69,9 @@ gui/server.py          endpointy API + strumień MJPEG (tylko 127.0.0.1)
 gui/camera_stream.py   wątek kamery: detekcja / rozpoznawanie / zbieranie zdjęć
 gui/rozpoznawanie.py   silnik: modele, wzorce, emocje, korekta progu
 gui/trening.py         subprocess 02 + 03, parser [postep], log i przerwanie
-gui/ewaluacja.py       subprocess 07, parser [postep], log i przerwanie
+gui/ewaluacja.py       subprocess 07, parser [postep], log i przerwanie (klasa bazowa)
 gui/eksperymenty.py    subprocess 08, parser [postep], log i przerwanie
+gui/test_trudny.py     subprocess 09, walidacja data/raw_test, log i przerwanie
 gui/templates/         index.html (jeden widok, przełączane zakładki)
 gui/static/            Bootstrap 5 (lokalnie) + app.css + app.js
 common/rozpoznawanie.py wspólna logika dopasowania używana też przez 04
@@ -104,7 +106,7 @@ POST /api/model/przygotuj       wczytanie modeli w tle
 POST /api/model/emocje          włącz/wyłącz emocje
 POST /api/model/korekta         korekta progu podobieństwa
 
-POST /api/zbieranie/start       start zbierania do data/raw
+POST /api/zbieranie/start       start zbierania do data/raw (lub data/raw_test)
 POST /api/zbieranie/stop        stop zbierania
 
 GET  /api/trening/status        stan treningu (etap, %, log)
@@ -123,6 +125,12 @@ POST /api/eksperymenty/start       uruchom 08_eksperymenty.py
 POST /api/eksperymenty/stop        przerwij eksperymenty
 GET  /api/eksperymenty/raport      ostatni raport JSON
 GET  /api/eksperymenty/wykres/<n>  wykres PNG z models/eksperymenty/wykresy
+
+GET  /api/test-trudny/status       stan testu trudnego (etap, %, log)
+POST /api/test-trudny/start        uruchom 09_test_trudny.py
+POST /api/test-trudny/stop         przerwij test trudny
+GET  /api/test-trudny/raport       ostatni raport JSON
+GET  /api/test-trudny/wykres/<n>   wykres PNG z models/test_trudny/wykresy
 
 GET  /api/baza                  osoby, liczba zdjęć, informacje o modelu
 GET  /api/baza/<osoba>/zdjecie  przykładowe zdjęcie osoby
@@ -164,10 +172,12 @@ pokazuje 100%, a panel odświeża raport.
 Zakładka **Ewaluacja** pokazuje:
 
 - badge stanu i etap, procent, czas oraz log (bez linii maszynowych),
-- podsumowanie: accuracy, FAR, FRR, EER, AUC,
+- podsumowanie: accuracy, FAR, FRR, EER, AUC — każda wartość z 95% CI,
 - tabelę precision / recall / F1 na osobę,
-- tabelę porównania metod (prototypy, k-NN, regresja logistyczna),
-- wykresy PNG i galerię pomyłek z podpisami „prawdziwa → przewidziana”,
+- tabelę porównania metod (prototypy, k-NN, regresja logistyczna)
+  z kolumną CI accuracy,
+- wykresy PNG (w tym `przedzialy_ufnosci.png`) i galerię pomyłek
+  z podpisami „prawdziwa → przewidziana”,
 - ostrzeżenia metodologiczne z raportu (metryki na zbiorze `test`,
   a progi kalibrowane na `val` — dlatego wynik jest uczciwy, choć obarczony
   niepewnością małej próby).
@@ -200,8 +210,9 @@ Zakładka **Eksperymenty** pokazuje:
 - badge stanu, etap, procent, czas i log (bez linii maszynowych),
 - kartę „Co sprawdzamy?” z krótkim opisem czterech eksperymentów,
 - sześć kart z wynikami wariantu „wszystkie” (accuracy zamknięta
-  i otwarta, FAR, FRR, EER z progiem, AUC),
-- tabelę wszystkich wariantów: liczba zdjęć, accuracy, FAR, FRR, EER, AUC,
+  i otwarta, FAR, FRR, EER z progiem, AUC) z 95% CI,
+- tabelę wszystkich wariantów: liczba zdjęć, accuracy, FAR, FRR, EER, AUC
+  oraz CI accuracy,
 - cztery wykresy PNG (liczba zdjęć, jasność, `k` w k-NN, próg decyzyjny),
 - automatyczne wnioski wygenerowane przez `08` oraz ostrzeżenia
   metodologiczne (metryki na zbiorze testowym, próg EER wybierany na
@@ -212,6 +223,53 @@ Raport, CSV i wykresy są serwowane wyłącznie z `models/eksperymenty/`;
 endpoint `/api/eksperymenty/wykres/<n>` sprawdza rozszerzenie pliku
 i odrzuca próby wyjścia poza folder. Przerwanie działa jak w ewaluacji —
 zabija proces potomny i nie zostawia połowy raportu.
+
+## Test trudny
+
+`gui/test_trudny.py` to podklasa managera ewaluacji — ta sama maszyneria
+procesu, logu i postępu, ale uruchamia `09_test_trudny.py` na osobnym
+zbiorze `data/raw_test`:
+
+```
+[postep-start] embeddingi 80
+[postep] embeddingi 32
+...
+[postep-start] metryki 4
+```
+
+Faza `embeddingi` odpowiada za 0–80% paska, a `metryki` (prototypy, CI,
+porównanie z `07`, wykresy i zapis raportu) za 80–97%. Po sukcesie pasek
+pokazuje 100%, a panel odświeża raport.
+
+Zakładka **Test trudny** pokazuje:
+
+- badge stanu, etap, procent, czas i log (bez linii maszynowych),
+- kartę „Po co osobny test?” z wyjaśnieniem różnicy między łatwym testem
+  z kroku 5 a zdjęciami z innych warunków,
+- podsumowanie: accuracy, FAR, FRR, EER, AUC — każda wartość z 95% CI,
+- tabelę **Łatwy test (07) vs trudny test (09)**: obie wartości i różnicę
+  w punktach procentowych (dla AUC w jednostkach),
+- tabelę recall na osobę,
+- cztery wykresy: podsumowanie z CI, porównanie łatwy/trudny, rozkład
+  podobieństw i macierz pomyłek,
+- ostrzeżenia z raportu (brak obcych, brak zdjęć niektórych osób, mała
+  próba).
+
+Walidacja przed startem jest wczesna i czytelna. Panel odmówi uruchomienia,
+gdy brakuje `models/wzorce_osob.json`, gdy nie ma folderu `data/raw_test`
+albo gdy w jego podfolderach nie ma żadnego zdjęcia. Komunikat podpowiada,
+żeby zebrać zdjęcia przez **Dodaj twarz → Zapisz jako test trudny** albo
+`01_zbieranie_danych.py --folder data/raw_test`.
+
+Raport i wykresy są serwowane wyłącznie z `models/test_trudny/`; endpoint
+`/api/test-trudny/wykres/<n>` sprawdza rozszerzenie pliku i odrzuca próby
+wyjścia poza folder. Przerwanie zabija proces potomny i nie zostawia połowy
+raportu.
+
+Zdjęcia do testu trudnego zbierzesz w zakładce **Dodaj twarz**: przełącznik
+**Zapisz jako test trudny** zmienia folder docelowy na `data/raw_test`.
+Nie mieszaj ich z `data/raw` — po zmieszaniu trafiłyby do treningu i test
+przestałby być uczciwy.
 
 ## Pliki Bootstrapa
 

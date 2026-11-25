@@ -44,6 +44,7 @@
     panelDodawanie: document.getElementById('panelDodawanie'),
     osobaNazwa: document.getElementById('osobaNazwa'),
     celZdjec: document.getElementById('celZdjec'),
+    testTrudnyZbieranie: document.getElementById('testTrudnyZbieranie'),
     licznikZdjec: document.getElementById('licznikZdjec'),
     pasekZbierania: document.getElementById('pasekZbierania'),
     wskazowkaZbierania: document.getElementById('wskazowkaZbierania'),
@@ -98,6 +99,24 @@
     tabelaEksperymentow: document.getElementById('tabelaEksperymentow'),
     wykresyEksperymentow: document.getElementById('wykresyEksperymentow'),
     ostrzezeniaEksperymentow: document.getElementById('ostrzezeniaEksperymentow'),
+
+    viewTestTrudny: document.getElementById('viewTestTrudny'),
+    badgeTestTrudny: document.getElementById('badgeTestTrudny'),
+    etapTestTrudny: document.getElementById('etapTestTrudny'),
+    procentTestTrudny: document.getElementById('procentTestTrudny'),
+    pasekTestTrudny: document.getElementById('pasekTestTrudny'),
+    btnTestTrudnyStart: document.getElementById('btnTestTrudnyStart'),
+    btnTestTrudnyStop: document.getElementById('btnTestTrudnyStop'),
+    czasTestTrudny: document.getElementById('czasTestTrudny'),
+    alertTestTrudny: document.getElementById('alertTestTrudny'),
+    alertTestTrudnyBlad: document.getElementById('alertTestTrudnyBlad'),
+    logTestTrudny: document.getElementById('logTestTrudny'),
+    podsumowanieTestTrudny: document.getElementById('podsumowanieTestTrudny'),
+    dataRaportuTestTrudny: document.getElementById('dataRaportuTestTrudny'),
+    tabelaPorownaniaTrudny: document.getElementById('tabelaPorownaniaTrudny'),
+    tabelaMetrykTrudny: document.getElementById('tabelaMetrykTrudny'),
+    wykresyTestTrudny: document.getElementById('wykresyTestTrudny'),
+    ostrzezeniaTestTrudny: document.getElementById('ostrzezeniaTestTrudny'),
 
     viewBaza: document.getElementById('viewBaza'),
     badgeBazy: document.getElementById('badgeBazy'),
@@ -164,6 +183,11 @@
       podtytul: 'Wpływ liczby zdjęć, jasności, k w k-NN i progu decyzyjnego',
       kamera: false,
     },
+    'test-trudny': {
+      tytul: 'Test trudny',
+      podtytul: 'Ten sam model na zdjęciach z innych warunków — czy wynik się utrzyma?',
+      kamera: false,
+    },
     baza: {
       tytul: 'Baza twarzy',
       podtytul: 'Podgląd i usuwanie zapisanych osób',
@@ -220,6 +244,14 @@
     przerwany: ['Przerwano', 'text-bg-secondary'],
   };
 
+  const OPIS_TESTU_TRUDNEGO = {
+    bezczynny: ['Bezczynny', 'text-bg-secondary'],
+    dziala: ['Trwa test trudny', 'text-bg-warning'],
+    gotowe: ['Gotowe', 'text-bg-success'],
+    blad: ['Błąd', 'text-bg-danger'],
+    przerwany: ['Przerwano', 'text-bg-secondary'],
+  };
+
   const OPIS_WYKRESOW_EKSPERYMENTOW = {
     wplyw_liczby_zdjec: 'Wpływ liczby zdjęć treningowych',
     wplyw_jasnosci: 'Wpływ augmentacji jasności',
@@ -233,6 +265,14 @@
     krzywa_progu: 'Kompromis FAR / FRR',
     porownanie_metod: 'Porównanie metod',
     pca_embeddingi: 'Embeddingi w 2D (PCA)',
+    przedzialy_ufnosci: 'Przedziały ufności (95%)',
+  };
+
+  const OPIS_WYKRESOW_TESTU_TRUDNEGO = {
+    podsumowanie: 'Wynik testu trudnego z 95% przedziałem ufności',
+    porownanie: 'Łatwy test vs trudny test',
+    rozklad_podobienstw: 'Rozkład podobieństw: swoi vs obcy',
+    macierz_pomylek: 'Macierz pomyłek',
   };
 
   const toastBlad = bootstrap.Toast.getOrCreateInstance(el.toastBlad, { delay: 9000 });
@@ -253,6 +293,8 @@
     czasRaportu: null,
     raportEksperymentow: null,
     czasRaportuEksp: null,
+    raportTestuTrudnego: null,
+    czasRaportuTestTrudny: null,
     ostatnieWyniki: '',
   };
 
@@ -264,6 +306,26 @@
     wartosc === null || wartosc === undefined
       ? '—'
       : `${formatuj(wartosc * 100, miejsca)}%`;
+
+  // Przedział ufności w krótkiej formie, np. "CI 97,1–100,0%".
+  const formatujCI = (przedzial, procent = true) => {
+    if (!przedzial || przedzial.length !== 2) {
+      return 'brak CI';
+    }
+    const [dolny, gorny] = przedzial;
+    return procent
+      ? `CI ${formatuj(dolny * 100)}–${formatuj(gorny * 100)}%`
+      : `CI ${formatuj(dolny, 3)}–${formatuj(gorny, 3)}`;
+  };
+
+  // Przedział ufności z raportu: obiekty mają go w różnych miejscach.
+  const ciZRaportu = (zrodlo, klucz) => {
+    if (!zrodlo) {
+      return null;
+    }
+    const przedzialy = zrodlo.przedzialy_ufnosci || {};
+    return (przedzialy.metryki || {})[klucz] || null;
+  };
 
   const ogranicz = (wartosc, min = 0, max = 100) =>
     Math.min(max, Math.max(min, Number(wartosc) || 0));
@@ -410,6 +472,7 @@
     el.viewTrening.classList.toggle('d-none', nazwa !== 'trening');
     el.viewEwaluacja.classList.toggle('d-none', nazwa !== 'ewaluacja');
     el.viewEksperymenty.classList.toggle('d-none', nazwa !== 'eksperymenty');
+    el.viewTestTrudny.classList.toggle('d-none', nazwa !== 'test-trudny');
     el.viewBaza.classList.toggle('d-none', nazwa !== 'baza');
     el.viewInfo.classList.toggle('d-none', nazwa !== 'info');
 
@@ -436,6 +499,9 @@
     } else if (nazwa === 'eksperymenty') {
       await odswiezEksperymenty();
       await odswiezRaportEksperymentow();
+    } else if (nazwa === 'test-trudny') {
+      await odswiezTestTrudny();
+      await odswiezRaportTestuTrudnego();
     } else if (nazwa === 'baza') {
       await odswiezBaze();
     }
@@ -557,6 +623,7 @@
     el.proporcja.disabled = blokada;
     el.osobaNazwa.disabled = dziala && dane.tryb === 'zbieranie';
     el.celZdjec.disabled = dziala && dane.tryb === 'zbieranie';
+    el.testTrudnyZbieranie.disabled = dziala && dane.tryb === 'zbieranie';
 
     if (dziala && !el.video.hasAttribute('src')) {
       pokazPodglad();
@@ -759,6 +826,7 @@
       adres = '/api/zbieranie/start';
       daneStartu.osoba = osoba;
       daneStartu.cel = cel;
+      daneStartu.test_trudny = el.testTrudnyZbieranie.checked;
     } else {
       daneStartu.tryb = 'detekcja';
     }
@@ -1084,7 +1152,7 @@
       el.tabelaMetryk.innerHTML =
         '<tr><td colspan="5" class="text-muted small">Brak danych.</td></tr>';
       el.tabelaPorownania.innerHTML =
-        '<tr><td colspan="6" class="text-muted small">Brak danych.</td></tr>';
+        '<tr><td colspan="7" class="text-muted small">Brak danych.</td></tr>';
       el.wykresyEwaluacji.innerHTML =
         '<div class="col-12 text-muted small">Wykresy pojawią się po ewaluacji.</div>';
       el.galeriaPomylek.innerHTML =
@@ -1097,6 +1165,7 @@
     const wersja = dane.mtime || Date.now();
     const prototypy = dane.prototypy || {};
     const metryki = prototypy.metryki || {};
+    const ci = (prototypy.przedzialy_ufnosci || {}).metryki || {};
     const informacje = dane.dane || {};
 
     el.dataRaportu.textContent = dane.wygenerowano
@@ -1104,11 +1173,11 @@
       : '—';
 
     const karty = [
-      ['Accuracy', formatujProcent(metryki.accuracy), `${metryki.poprawne ?? '—'}/${metryki.liczba_znanych ?? '—'}`],
-      ['FAR', formatujProcent(metryki.far), `${metryki.zaakceptowani_obcy ?? '—'} obcych`],
-      ['FRR', formatujProcent(metryki.frr), `${metryki.odrzucone_znane ?? '—'} odrzuconych`],
-      ['EER', formatujProcent(prototypy.eer), prototypy.prog_eer != null ? `próg ${formatuj(prototypy.prog_eer, 2)}` : '—'],
-      ['AUC', prototypy.auc != null ? formatuj(prototypy.auc, 3) : '—', '1,0 = idealnie'],
+      ['Accuracy', formatujProcent(metryki.accuracy), `${metryki.poprawne ?? '—'}/${metryki.liczba_znanych ?? '—'} · ${formatujCI(ci.accuracy)}`],
+      ['FAR', formatujProcent(metryki.far), `${metryki.zaakceptowani_obcy ?? '—'} obcych · ${formatujCI(ci.far)}`],
+      ['FRR', formatujProcent(metryki.frr), `${metryki.odrzucone_znane ?? '—'} odrzuconych · ${formatujCI(ci.frr)}`],
+      ['EER', formatujProcent(prototypy.eer), `${prototypy.prog_eer != null ? `próg ${formatuj(prototypy.prog_eer, 2)}` : '—'} · ${formatujCI(ci.eer)}`],
+      ['AUC', prototypy.auc != null ? formatuj(prototypy.auc, 3) : '—', formatujCI(ci.auc, false)],
     ];
 
     el.podsumowanieEwaluacji.innerHTML =
@@ -1157,10 +1226,11 @@
               `<td class="text-end text-mono">${formatujProcent(wpis.frr)}</td>` +
               `<td class="text-end text-mono">${formatujProcent(wpis.eer)}</td>` +
               `<td class="text-end text-mono">${wpis.auc != null ? formatuj(wpis.auc, 3) : '—'}</td>` +
+              `<td class="text-end text-mono">${formatujCI(ciZRaportu(wpis, 'accuracy'))}</td>` +
               '</tr>',
           )
           .join('')
-      : '<tr><td colspan="6" class="text-muted small">Brak danych.</td></tr>';
+      : '<tr><td colspan="7" class="text-muted small">Brak danych.</td></tr>';
 
     const wykresy = Object.entries(dane.wykresy || {});
     el.wykresyEwaluacji.innerHTML = wykresy.length
@@ -1314,7 +1384,7 @@
       el.wnioskiEksperymentow.innerHTML =
         '<span class="text-muted">Wnioski pojawią się po eksperymentach.</span>';
       el.tabelaEksperymentow.innerHTML =
-        '<tr><td colspan="9" class="text-muted small">Brak danych.</td></tr>';
+        '<tr><td colspan="10" class="text-muted small">Brak danych.</td></tr>';
       el.wykresyEksperymentow.innerHTML =
         '<div class="col-12 text-muted small">Wykresy pojawią się po eksperymentach.</div>';
       return;
@@ -1329,22 +1399,23 @@
       rozmiary.find((wpis) => wpis.etykieta === 'wszystkie') ||
       rozmiary[rozmiary.length - 1];
     const metryki = (wzorzec && wzorzec.metryki) || {};
+    const ci = (metryki.przedzialy_ufnosci || {}).metryki || {};
 
     el.dataRaportuEksp.textContent = dane.wygenerowano
       ? dane.wygenerowano.replace('T', ' ')
       : '—';
 
     const karty = [
-      ['Accuracy (zamk.)', formatujProcent(metryki.accuracy_zamknieta), 'kogo-kim'],
-      ['Accuracy (otw.)', formatujProcent(metryki.accuracy_otwarta), 'z odrzucaniem obcych'],
+      ['Accuracy (zamk.)', formatujProcent(metryki.accuracy_zamknieta), `kogo-kim · ${formatujCI(ci.accuracy_zamknieta)}`],
+      ['Accuracy (otw.)', formatujProcent(metryki.accuracy_otwarta), `z odrzucaniem obcych · ${formatujCI(ci.accuracy)}`],
       [
         'EER',
         formatujProcent(metryki.eer),
-        metryki.prog_eer != null ? `próg ${formatuj(metryki.prog_eer, 2)}` : '—',
+        `${metryki.prog_eer != null ? `próg ${formatuj(metryki.prog_eer, 2)}` : '—'} · ${formatujCI(ci.eer)}`,
       ],
-      ['FAR', formatujProcent(metryki.far), `${metryki.zaakceptowani_obcy ?? '—'} obcych`],
-      ['FRR', formatujProcent(metryki.frr), `${metryki.odrzucone_znane ?? '—'} odrzuconych`],
-      ['AUC', metryki.auc != null ? formatuj(metryki.auc, 3) : '—', '1,0 = idealnie'],
+      ['FAR', formatujProcent(metryki.far), `${metryki.zaakceptowani_obcy ?? '—'} obcych · ${formatujCI(ci.far)}`],
+      ['FRR', formatujProcent(metryki.frr), `${metryki.odrzucone_znane ?? '—'} odrzuconych · ${formatujCI(ci.frr)}`],
+      ['AUC', metryki.auc != null ? formatuj(metryki.auc, 3) : '—', formatujCI(ci.auc, false)],
     ];
 
     el.podsumowanieEksperymentow.innerHTML =
@@ -1394,6 +1465,7 @@
             `<td class="text-end text-mono">${formatujProcent(m.frr)}</td>` +
             `<td class="text-end text-mono">${formatujProcent(m.eer)}</td>` +
             `<td class="text-end text-mono">${m.auc != null ? formatuj(m.auc, 3) : '—'}</td>` +
+            `<td class="text-end text-mono">${formatujCI(ciZRaportu(m, 'accuracy'))}</td>` +
             '</tr>',
         );
       });
@@ -1401,7 +1473,7 @@
 
     el.tabelaEksperymentow.innerHTML = wiersze.length
       ? wiersze.join('')
-      : '<tr><td colspan="9" class="text-muted small">Brak danych.</td></tr>';
+      : '<tr><td colspan="10" class="text-muted small">Brak danych.</td></tr>';
 
     const wnioski = dane.wnioski || [];
     el.wnioskiEksperymentow.innerHTML = wnioski.length
@@ -1442,6 +1514,245 @@
     try {
       const dane = await pobierz('/api/eksperymenty/raport');
       renderRaportEksperymentow(dane);
+    } catch (blad) {
+      pokazBlad(blad.message);
+    }
+  }
+
+  // -------------------------------------------------------- test trudny
+  function renderTestTrudny(dane) {
+    const [opis, klasa] = OPIS_TESTU_TRUDNEGO[dane.stan] || OPIS_TESTU_TRUDNEGO.bezczynny;
+    el.badgeTestTrudny.textContent = opis;
+    el.badgeTestTrudny.className = `badge ms-auto ${klasa}`;
+    el.etapTestTrudny.textContent = dane.etap || 'Gotowy do uruchomienia';
+    el.procentTestTrudny.textContent = `${Math.round(dane.postep || 0)}%`;
+    el.pasekTestTrudny.style.width = `${ogranicz(dane.postep)}%`;
+
+    const trwa = dane.stan === 'dziala';
+    el.btnTestTrudnyStart.disabled = trwa;
+    el.btnTestTrudnyStop.disabled = !trwa;
+    el.pasekTestTrudny.classList.toggle('progress-bar-animated', trwa);
+    el.pasekTestTrudny.classList.toggle('progress-bar-striped', trwa);
+
+    el.czasTestTrudny.textContent = dane.czas_s ? `Czas: ${opisCzasu(dane.czas_s)}` : '—';
+
+    el.alertTestTrudny.classList.toggle('d-none', dane.stan !== 'gotowe');
+    if (dane.stan === 'gotowe') {
+      el.alertTestTrudny.textContent =
+        'Test trudny zakończony. Raport i wykresy są gotowe.';
+    }
+
+    const bladWidoczny = dane.stan === 'blad' || dane.stan === 'przerwany';
+    el.alertTestTrudnyBlad.classList.toggle('d-none', !bladWidoczny);
+    if (bladWidoczny) {
+      el.alertTestTrudnyBlad.textContent =
+        dane.blad || 'Test trudny nie został ukończony.';
+    }
+
+    const log = (dane.log || []).join('\n');
+    if (log && el.logTestTrudny.textContent !== log) {
+      el.logTestTrudny.textContent = log;
+      el.logTestTrudny.scrollTop = el.logTestTrudny.scrollHeight;
+    }
+  }
+
+  async function odswiezTestTrudny() {
+    try {
+      const dane = await pobierz('/api/test-trudny/status');
+      renderTestTrudny(dane);
+      if (dane.czas_raportu && dane.czas_raportu !== stan.czasRaportuTestTrudny) {
+        stan.czasRaportuTestTrudny = dane.czas_raportu;
+        await odswiezRaportTestuTrudnego();
+      }
+      return dane;
+    } catch (blad) {
+      pokazBlad(blad.message);
+      return null;
+    }
+  }
+
+  async function startTestuTrudnego() {
+    el.btnTestTrudnyStart.disabled = true;
+    try {
+      await wyslij('/api/test-trudny/start');
+      el.logTestTrudny.textContent = 'Uruchamianie testu trudnego…';
+      pokazInfo('Test trudny uruchomiony.');
+      await odswiezTestTrudny();
+    } catch (blad) {
+      pokazBlad(blad.message);
+      el.btnTestTrudnyStart.disabled = false;
+    }
+  }
+
+  async function stopTestuTrudnego() {
+    el.btnTestTrudnyStop.disabled = true;
+    try {
+      await wyslij('/api/test-trudny/stop');
+      await odswiezTestTrudny();
+      pokazInfo('Test trudny przerwany.');
+    } catch (blad) {
+      pokazBlad(blad.message);
+    }
+  }
+
+  function renderRaportTestuTrudnego(dane) {
+    if (!dane || !dane.dostepny) {
+      el.dataRaportuTestTrudny.textContent = '—';
+      el.podsumowanieTestTrudny.innerHTML =
+        `<span class="text-muted">${escapeHtml(
+          (dane && dane.komunikat) || 'Brak raportu — uruchom test trudny.',
+        )}</span>`;
+      el.tabelaPorownaniaTrudny.innerHTML =
+        '<tr><td colspan="4" class="text-muted small">Brak danych.</td></tr>';
+      el.tabelaMetrykTrudny.innerHTML =
+        '<tr><td colspan="4" class="text-muted small">Brak danych.</td></tr>';
+      el.wykresyTestTrudny.innerHTML =
+        '<div class="col-12 text-muted small">Wykresy pojawią się po teście trudnym.</div>';
+      return;
+    }
+
+    stan.raportTestuTrudnego = dane;
+    const wersja = dane.mtime || Date.now();
+    const prototypy = dane.prototypy || {};
+    const metryki = prototypy.metryki || {};
+    const ci = (prototypy.przedzialy_ufnosci || {}).metryki || {};
+    const informacje = dane.dane || {};
+    const porownanie = dane.porownanie_latwy_trudny || {};
+    const latwy = porownanie.latwy || null;
+
+    el.dataRaportuTestTrudny.textContent = dane.wygenerowano
+      ? dane.wygenerowano.replace('T', ' ')
+      : '—';
+
+    const karty = [
+      ['Accuracy', formatujProcent(metryki.accuracy), `${metryki.poprawne ?? '—'}/${metryki.liczba_znanych ?? '—'} · ${formatujCI(ci.accuracy)}`],
+      ['FAR', formatujProcent(metryki.far), `${metryki.zaakceptowani_obcy ?? '—'} obcych · ${formatujCI(ci.far)}`],
+      ['FRR', formatujProcent(metryki.frr), `${metryki.odrzucone_znane ?? '—'} odrzuconych · ${formatujCI(ci.frr)}`],
+      ['EER', formatujProcent(prototypy.eer), `${prototypy.prog_eer != null ? `próg ${formatuj(prototypy.prog_eer, 2)}` : '—'} · ${formatujCI(ci.eer)}`],
+      ['AUC', prototypy.auc != null ? formatuj(prototypy.auc, 3) : '—', formatujCI(ci.auc, false)],
+    ];
+
+    el.podsumowanieTestTrudny.innerHTML =
+      '<div class="row g-2">' +
+      karty
+        .map(
+          ([nazwa, wartosc, dopisek]) =>
+            '<div class="col-6"><div class="border rounded p-2 h-100">' +
+            `<div class="text-muted text-uppercase" style="font-size:.65rem;">${nazwa}</div>` +
+            `<div class="h5 mb-0 text-mono">${wartosc}</div>` +
+            `<div class="text-muted" style="font-size:.7rem;">${dopisek}</div>` +
+            '</div></div>',
+        )
+        .join('') +
+      '</div>' +
+      `<p class="small text-muted mt-2 mb-0">Folder: ${escapeHtml(informacje.folder || '—')}` +
+      ` · znani: ${informacje.zdjecia_znanych ?? '—'} zdjęć` +
+      ` · obcy: ${informacje.zdjecia_obcych ?? '—'} zdjęć` +
+      ` · czas: ${formatuj(dane.czas_s, 0)} s</p>` +
+      ((informacje.brakujace_osoby || []).length
+        ? `<p class="small text-warning-emphasis mb-0">Brak zdjęć osób: ${escapeHtml(
+            informacje.brakujace_osoby.join(', '),
+          )}</p>`
+        : '');
+
+    const pobierzWartosc = (zrodlo, klucz) => {
+      if (!zrodlo) {
+        return null;
+      }
+      if (klucz === 'eer' || klucz === 'auc') {
+        return zrodlo[klucz] ?? null;
+      }
+      return (zrodlo.metryki || {})[klucz] ?? null;
+    };
+
+    const wiersze = [];
+    const metrykiPorownania = [
+      ['accuracy', 'Accuracy', true],
+      ['far', 'FAR', true],
+      ['frr', 'FRR', true],
+      ['eer', 'EER', true],
+      ['auc', 'AUC', false],
+    ];
+    metrykiPorownania.forEach(([klucz, nazwa, procent]) => {
+      const stara = pobierzWartosc(latwy, klucz);
+      const nowa = pobierzWartosc(prototypy, klucz);
+      let roznica = '—';
+      let klasa = '';
+      let roznicaWartosc = null;
+      if (stara != null && nowa != null) {
+        roznicaWartosc = nowa - stara;
+        // Dla FAR i EER mniej = lepiej, więc dodatnia różnica jest zła.
+        const kierunek = klucz === 'far' || klucz === 'eer' ? -1 : 1;
+        if (Math.abs(roznicaWartosc) > 1e-9) {
+          klasa = roznicaWartosc * kierunek > 0 ? 'text-success' : 'text-danger';
+        }
+        roznica = procent
+          ? `${roznicaWartosc >= 0 ? '+' : ''}${formatuj(roznicaWartosc * 100)} pkt proc.`
+          : `${roznicaWartosc >= 0 ? '+' : ''}${formatuj(roznicaWartosc, 3)}`;
+      }
+      const sformatuj = (wartosc) =>
+        wartosc == null ? '—' : procent ? formatujProcent(wartosc) : formatuj(wartosc, 3);
+      wiersze.push(
+        '<tr>' +
+          `<td class="fw-semibold">${nazwa}</td>` +
+          `<td class="text-end text-mono">${sformatuj(stara)}</td>` +
+          `<td class="text-end text-mono">${sformatuj(nowa)}</td>` +
+          `<td class="text-end text-mono ${klasa}">${escapeHtml(roznica)}</td>` +
+          '</tr>',
+      );
+    });
+
+    el.tabelaPorownaniaTrudny.innerHTML = wiersze.length
+      ? wiersze.join('')
+      : '<tr><td colspan="4" class="text-muted small">Brak danych z kroku 7.</td></tr>';
+
+    const naOsobe = Object.entries(prototypy.na_osobe || {});
+    el.tabelaMetrykTrudny.innerHTML = naOsobe.length
+      ? naOsobe
+          .map(
+            ([osoba, metryka]) =>
+              '<tr>' +
+              `<td class="fw-semibold">${escapeHtml(osoba)}</td>` +
+              `<td class="text-end text-mono">${metryka.zdjecia}</td>` +
+              `<td class="text-end text-mono">${metryka.poprawne}</td>` +
+              `<td class="text-end text-mono">${formatujProcent(metryka.recall)}</td>` +
+              '</tr>',
+          )
+          .join('')
+      : '<tr><td colspan="4" class="text-muted small">Brak danych.</td></tr>';
+
+    const wykresy = Object.entries(dane.wykresy || {});
+    el.wykresyTestTrudny.innerHTML = wykresy.length
+      ? wykresy
+          .map(([klucz, plik]) => {
+            const opis = OPIS_WYKRESOW_TESTU_TRUDNEGO[klucz] || klucz;
+            const adres = `/api/test-trudny/wykres/${encodeURIComponent(plik)}?v=${wersja}`;
+            return (
+              '<div class="col-xl-6"><div class="card h-100 border">' +
+              '<div class="card-body p-2">' +
+              `<img class="wykres-ewaluacji" src="${adres}" alt="${escapeHtml(opis)}" loading="lazy">` +
+              `<div class="small text-muted mt-2 text-center">${escapeHtml(opis)}</div>` +
+              '</div></div></div>'
+            );
+          })
+          .join('')
+      : '<div class="col-12 text-muted small">Brak wykresów.</div>';
+
+    const ostrzezenia = informacje.ostrzezenia || [];
+    el.ostrzezeniaTestTrudny.innerHTML = ostrzezenia.length
+      ? ostrzezenia
+          .map(
+            (tekst, indeks) =>
+              `<p class="${indeks === ostrzezenia.length - 1 ? 'mb-0' : 'mb-1'}">${escapeHtml(tekst)}</p>`,
+          )
+          .join('')
+      : 'Trudny test mierzy model w innych warunkach niż trening.';
+  }
+
+  async function odswiezRaportTestuTrudnego() {
+    try {
+      const dane = await pobierz('/api/test-trudny/raport');
+      renderRaportTestuTrudnego(dane);
     } catch (blad) {
       pokazBlad(blad.message);
     }
@@ -1597,6 +1908,13 @@
     const cel = Number.parseInt(el.celZdjec.value, 10) || 0;
     el.licznikZdjec.textContent = `0 / ${cel || 'bez limitu'}`;
     el.pasekZbierania.style.width = '0%';
+    el.wskazowkaZbierania.innerHTML = el.testTrudnyZbieranie.checked
+      ? 'Tryb <strong>test trudny</strong>: zdjęcia trafią do <code>data/raw_test</code>. ' +
+        'Zbierz je w innych warunkach niż trening (inny dzień, światło, kąt), ' +
+        'żeby pomiar był uczciwy.'
+      : 'Ustaw twarz w kadrze i kliknij <strong>Start</strong>. Zdjęcia zapisują ' +
+        'się automatycznie co ok. 0,3 s. Zbierz różne kąty głowy, oświetlenie ' +
+        'i wyraz twarzy (min. 150–300 zdjęć).';
   }
 
   // ----------------------------------------------------------------- init
@@ -1618,6 +1936,8 @@
     el.btnEwaluacjaStop.addEventListener('click', stopEwaluacji);
     el.btnEksperymentyStart.addEventListener('click', startEksperymentow);
     el.btnEksperymentyStop.addEventListener('click', stopEksperymentow);
+    el.btnTestTrudnyStart.addEventListener('click', startTestuTrudnego);
+    el.btnTestTrudnyStop.addEventListener('click', stopTestuTrudnego);
     el.btnOdswiezBaze.addEventListener('click', odswiezBaze);
     el.btnPotwierdzUsun.addEventListener('click', potwierdzUsuniecie);
 
@@ -1646,6 +1966,7 @@
       el.osobaNazwa.classList.toggle('is-invalid', Boolean(el.osobaNazwa.value) && !poprawna);
     });
     el.celZdjec.addEventListener('input', aktualizujWskazowkeZbierania);
+    el.testTrudnyZbieranie.addEventListener('change', aktualizujWskazowkeZbierania);
 
     el.btnSidebar.addEventListener('click', przelaczSidebar);
     el.sidebarBackdrop.addEventListener('click', () => {
@@ -1704,6 +2025,13 @@
     setInterval(() => {
       if (stan.widok === 'eksperymenty') {
         odswiezEksperymenty();
+      }
+    }, 1000);
+
+    // Test trudny: poller tylko na jego widoku.
+    setInterval(() => {
+      if (stan.widok === 'test-trudny') {
+        odswiezTestTrudny();
       }
     }, 1000);
   }

@@ -29,6 +29,7 @@ import cv2
 from common.camera import otworz_kamere, wykryj_dostepne_kamery
 from common.dane_osob import (
     FOLDER_RAW,
+    FOLDER_RAW_TEST,
     nastepny_numer_zdjecia,
     poprawna_nazwa,
 )
@@ -99,6 +100,8 @@ class StrumienKamery:
         self._cel = 0
         self._zapisane = 0
         self._ostatni_zapis = 0.0
+        # Gdzie zapisywać zdjęcia: zwykły zbiór treningowy albo test trudny.
+        self._folder_zapisu = FOLDER_RAW
 
         self._wyniki: list[dict] = []
         self._czas_wynikow = 0.0
@@ -172,6 +175,7 @@ class StrumienKamery:
         emocje: bool = False,
         osoba: str = "",
         cel: int = 0,
+        test_trudny: bool = False,
     ) -> None:
         """Otwiera kamerę i zaczyna przesyłać klatki.
 
@@ -225,6 +229,7 @@ class StrumienKamery:
             self._cel = int(cel)
             self._zapisane = 0
             self._ostatni_zapis = 0.0
+            self._folder_zapisu = FOLDER_RAW_TEST if test_trudny else FOLDER_RAW
             self._stan = STAN_URUCHAMIANIE
             self._blad = None
             self._klatka = None
@@ -393,6 +398,7 @@ class StrumienKamery:
             zapisane = self._zapisane
             ostatni_zapis = self._ostatni_zapis
             detektor = self._detektor
+            folder_bazowy = self._folder_zapisu
 
         if not osoba or detektor is None:
             return
@@ -417,7 +423,7 @@ class StrumienKamery:
             if wycinek.size > 0:
                 wycinek = cv2.resize(wycinek, ROZMIAR_ZDJECIA)
 
-                folder = FOLDER_RAW / osoba
+                folder = folder_bazowy / osoba
                 folder.mkdir(parents=True, exist_ok=True)
                 numer = nastepny_numer_zdjecia(folder, osoba)
                 sciezka = folder / f"{osoba}_{numer:04d}.jpg"
@@ -544,6 +550,7 @@ class StrumienKamery:
                 "osoba": self._osoba,
                 "cel": self._cel,
                 "zapisane": self._zapisane,
+                "test_trudny": self._folder_zapisu == FOLDER_RAW_TEST,
                 "wyniki": list(self._wyniki),
                 "wyniki_aktualne": bool(self._wyniki)
                 and (teraz - self._czas_wynikow <= WAZNOSC_WYNIKOW),

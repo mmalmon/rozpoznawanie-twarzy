@@ -10,6 +10,7 @@ przestałyby być porównywalne. Tutaj znajdują się wszystkie definicje:
   - FAR / FRR,
   - EER (punkt, w którym FAR = FRR),
   - AUC (jak dobrze ranking podobieństw rozdziela swoich od obcych),
+  - przedziały ufności (bootstrap) - jak pewny jest pomiar,
   - podobieństwa do prototypów oraz k-NN.
 
 Uwaga: samo "accuracy" nie wystarcza. Model, który zawsze odpowiada
@@ -18,6 +19,8 @@ patrzymy na kilka miar jednocześnie.
 """
 
 from __future__ import annotations
+
+from statistics import NormalDist
 
 import numpy as np
 import torch
@@ -165,6 +168,186 @@ def auc(wlasne: np.ndarray, obce: np.ndarray) -> float | None:
         suma_rang - liczba_pozytywnych * (liczba_pozytywnych + 1) / 2
     ) / (liczba_pozytywnych * liczba_negatywnych)
     return round(float(wynik), 4)
+
+
+def przedzial_ufnosci_proporcji(
+    sukcesy: int, proby: int, poziom: float = 0.95
+) -> list[float] | None:
+    """Przedział ufności Wilsona dla odsetka (np. accuracy, FAR, FRR).
+
+    DLA UCZNIÓW: dlaczego nie zwykły bootstrap? Bo przy wyniku 0 błędów
+    na 128 próbach bootstrap daje przedział 0%-0%. To sugerowałoby
+    stuprocentową pewność, której nie ma - przecież 129. zdjęcie mogłoby
+    przynieść błąd. Przedział Wilsona radzi sobie z takimi skrajnymi
+    przypadkami: dla 0/128 daje mniej więcej 0%-2,9%, a dla 130/130
+    około 97,1%-100%.
+
+    Wzór pochodzi z klasycznej statystyki i jest używany m.in. w ankietach
+    ("poparcie 45% +/- 3 pkt proc.").
+    """
+    if proby <= 0:
+        return None
+    sukcesy = max(0, min(int(sukcesy), int(proby)))
+    z = NormalDist().inv_cdf(1.0 - (1.0 - poziom) / 2.0)
+    p = sukcesy / proby
+    mianownik = 1.0 + z * z / proby
+    srodek = (p + z * z / (2.0 * proby)) / mianownik
+    polowa = (
+        z
+        * np.sqrt(p * (1.0 - p) / proby + z * z / (4.0 * proby * proby))
+        / mianownik
+    )
+    dolny = max(0.0, srodek - polowa)
+    gorny = min(1.0, srodek + polowa)
+    return [round(float(dolny), 4), round(float(gorny), 4)]
+
+
+def przedzial_ufnosci_bootstrap(
+    wartosci: np.ndarray,
+    poziom: float = 0.95,
+    n_bootstrap: int = 400,
+    seed: int = 42,
+) -> list[float] | None:
+    """Przedział ufności dla średniej metodą bootstrap (percentylowy).
+
+    DLA UCZNIÓW: pojedyncza liczba, np. "accuracy 100%", nie mówi, jak
+    pewny jest pomiar. Bootstrap odpowiada na pytanie: "gdybyśmy mieli
+    trochę inne zdjęcia testowe, jaki wynik moglibyśmy dostać?". Losujemy
+    ze zwracaniem tyle samo próbek, ile mamy, liczymy średnią i powtarzamy
+    to wiele razy. Potem odcinamy skrajne 2,5% wyników z każdej strony.
+
+    To NIE jest gwarancja, że model zawsze będzie tak dobry. To tylko
+    miara szumu losowania zdjęć - przy 20 zdjęciach przedział będzie
+    szeroki, przy 2000 wąski.
+    """
+    if len(wartosci) == 0:
+        return None
+    rng = np.random.default_rng(seed)
+    indeksy = rng.integers(0, len(wartosci), size=(n_bootstrap, len(wartosci)))
+    srednie = wartosci[indeksy].mean(axis=1)
+    alfa = (1.0 - poziom) / 2.0
+    dolny = float(np.quantile(srednie, alfa))
+    gorny = float(np.quantile(srednie, 1.0 - alfa))
+    return [round(dolny, 4), round(gorny, 4)]
+
+
+def przedzial_ufnosci_eer(
+    wlasne: np.ndarray,
+    obce: np.ndarray,
+    poziom: float = 0.95,
+    n_bootstrap: int = 400,
+    seed: int = 42,
+) -> list[float] | None:
+    """Przedział ufności dla EER (osobno losujemy swoich i obcych).
+
+    EER zależy od dwóch rozkładów podobieństw, dlatego losujemy każdy
+    z nich osobno, żeby nie zgubić proporcji między znanymi i obcymi.
+    """
+    if len(wlasne) == 0 or len(obce) == 0:
+        return None
+    rng = np.random.default_rng(seed)
+    wartosci: list[float] = []
+    for _ in range(n_bootstrap):
+        indeksy_wlasne = rng.integers(0, len(wlasne), size=len(wlasne))
+        indeksy_obce = rng.integers(0, len(obce), size=len(obce))
+        krzywa = krzywa_i_eer(
+            wlasne[indeksy_wlasne],
+            obce[indeksy_obce],
+            liczba_progow=101,
+        )
+        if krzywa is not None:
+            wartosci.append(float(krzywa["eer"]))
+    if not wartosci:
+        return None
+    alfa = (1.0 - poziom) / 2.0
+    return [
+        round(float(np.quantile(wartosci, alfa)), 4),
+        round(float(np.quantile(wartosci, 1.0 - alfa)), 4),
+    ]
+
+
+def przedzial_ufnosci_auc(
+    wlasne: np.ndarray,
+    obce: np.ndarray,
+    poziom: float = 0.95,
+    n_bootstrap: int = 400,
+    seed: int = 42,
+) -> list[float] | None:
+    """Przedział ufności dla AUC - ten sam pomysł co przy EER."""
+    if len(wlasne) == 0 or len(obce) == 0:
+        return None
+    rng = np.random.default_rng(seed)
+    wartosci: list[float] = []
+    for _ in range(n_bootstrap):
+        indeksy_wlasne = rng.integers(0, len(wlasne), size=len(wlasne))
+        indeksy_obce = rng.integers(0, len(obce), size=len(obce))
+        wynik = auc(wlasne[indeksy_wlasne], obce[indeksy_obce])
+        if wynik is not None:
+            wartosci.append(float(wynik))
+    if not wartosci:
+        return None
+    alfa = (1.0 - poziom) / 2.0
+    return [
+        round(float(np.quantile(wartosci, alfa)), 4),
+        round(float(np.quantile(wartosci, 1.0 - alfa)), 4),
+    ]
+
+
+def przedzialy_ufnosci(
+    trafienia: np.ndarray,
+    akceptacje_obcych: np.ndarray,
+    odrzucenia_znanych: np.ndarray,
+    wlasne: np.ndarray,
+    obce: np.ndarray,
+    poziom: float = 0.95,
+    n_bootstrap: int = 400,
+    seed: int = 42,
+    pelne: bool = True,
+    trafienia_zamknieta: np.ndarray | None = None,
+) -> dict:
+    """Zestaw przedziałów ufności dla wszystkich metryk jednej metody.
+
+    Wejście to tablice 0/1 dla pojedynczych zdjęć (trafienie, błędna
+    akceptacja obcego, błędne odrzucenie swojego) oraz dwa rankingi
+    podobieństw potrzebne do EER i AUC.
+
+    Odsetki (accuracy, FAR, FRR) liczymy przedziałem Wilsona, bo przy
+    wyniku 0 lub 100% zwykły bootstrap daje fałszywie wąski przedział.
+    EER i AUC wymagają dwóch rozkładów podobieństw, więc tam używamy
+    bootstrapu. ``pelne=False`` pomija kosztowny bootstrap (przydatne,
+    gdy EER i AUC nie zmieniają się między wariantami).
+    """
+    metryki = {
+        "accuracy": przedzial_ufnosci_proporcji(
+            int(np.sum(trafienia)), len(trafienia), poziom
+        ),
+        "far": przedzial_ufnosci_proporcji(
+            int(np.sum(akceptacje_obcych)), len(akceptacje_obcych), poziom
+        ),
+        "frr": przedzial_ufnosci_proporcji(
+            int(np.sum(odrzucenia_znanych)), len(odrzucenia_znanych), poziom
+        ),
+        "eer": (
+            przedzial_ufnosci_eer(wlasne, obce, poziom, n_bootstrap, seed + 3)
+            if pelne
+            else None
+        ),
+        "auc": (
+            przedzial_ufnosci_auc(wlasne, obce, poziom, n_bootstrap, seed + 4)
+            if pelne
+            else None
+        ),
+    }
+    if trafienia_zamknieta is not None:
+        metryki["accuracy_zamknieta"] = przedzial_ufnosci_proporcji(
+            int(np.sum(trafienia_zamknieta)), len(trafienia_zamknieta), poziom
+        )
+    return {
+        "poziom": poziom,
+        "n_bootstrap": n_bootstrap if pelne else 0,
+        "metoda": "Wilson (odsetki) + bootstrap (EER, AUC)",
+        "metryki": metryki,
+    }
 
 
 def podobienstwa_knn(

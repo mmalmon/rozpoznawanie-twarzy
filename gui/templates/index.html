@@ -62,6 +62,12 @@
         </svg>
         Eksperymenty
       </button>
+      <button class="nav-link" type="button" data-view="test-trudny">
+        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M12 9v4"/><path d="M12 16h.01"/>
+        </svg>
+        Test trudny
+      </button>
       <button class="nav-link" type="button" data-view="baza">
         <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>
@@ -328,6 +334,16 @@
                 <label class="form-label" for="celZdjec">Ile zdjęć zebrać</label>
                 <input class="form-control mb-3" id="celZdjec" type="number" min="10" max="2000" step="10" value="300">
 
+                <div class="form-check form-switch mb-3">
+                  <input class="form-check-input" type="checkbox" role="switch" id="testTrudnyZbieranie">
+                  <label class="form-check-label" for="testTrudnyZbieranie">Zapisz jako test trudny</label>
+                  <div class="form-text">
+                    Zdjęcia trafią do <code>data/raw_test</code> — osobnego zbioru do
+                    sprawdzenia modelu w innych warunkach (inny dzień, światło, kąt).
+                    Nie wejdą do treningu ani do kalibracji progu.
+                  </div>
+                </div>
+
                 <div class="d-flex justify-content-between small mb-1">
                   <span class="text-muted">Zapisane zdjęcia</span>
                   <span class="text-mono" id="licznikZdjec">0 / 300</span>
@@ -470,9 +486,15 @@
                 <strong>AUC</strong> — jak dobrze ranking podobieństw rozdziela swoich
                 od obcych (1,0 = idealnie, 0,5 = losowo).
               </p>
-              <p class="mb-0">
+              <p class="mb-2">
                 Porównujemy też <strong>prototypy</strong>, <strong>k-NN</strong> i
                 <strong>regresję logistyczną</strong> na tych samych embeddingach.
+              </p>
+              <p class="mb-0">
+                <strong>Przedziały ufności</strong> pokazują, jak pewny jest wynik.
+                Przy małym teście 100% accuracy nie znaczy „model idealny” — znaczy
+                „ten test nie pokazał błędu”. Przedział mówi, o ile wynik mógłby się
+                zmienić przy innych zdjęciach.
               </p>
             </div>
           </div>
@@ -526,10 +548,11 @@
                       <th class="text-end">FRR</th>
                       <th class="text-end">EER</th>
                       <th class="text-end">AUC</th>
+                      <th class="text-end">95% CI accuracy</th>
                     </tr>
                   </thead>
                   <tbody id="tabelaPorownania">
-                    <tr><td colspan="6" class="text-muted small">Brak danych.</td></tr>
+                    <tr><td colspan="7" class="text-muted small">Brak danych.</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -671,10 +694,11 @@
                       <th class="text-end">FRR</th>
                       <th class="text-end">EER</th>
                       <th class="text-end">AUC</th>
+                      <th class="text-end">95% CI accuracy</th>
                     </tr>
                   </thead>
                   <tbody id="tabelaEksperymentow">
-                    <tr><td colspan="9" class="text-muted small">Brak danych.</td></tr>
+                    <tr><td colspan="10" class="text-muted small">Brak danych.</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -698,6 +722,144 @@
             Eksperymenty mierzą wyniki na zbiorze testowym, a próg EER wybierają
             na walidacji. Pokazują zależności, ale przy małym teście różnice
             1–2 punktów procentowych mogą być przypadkiem.
+          </div>
+        </div>
+      </div>
+
+      <!-- ======================================================= test trudny -->
+      <div class="row g-3 d-none" id="viewTestTrudny">
+        <div class="col-lg-7">
+          <div class="card app-card">
+            <div class="card-header d-flex align-items-center">
+              Test trudny
+              <span class="badge text-bg-secondary ms-auto" id="badgeTestTrudny">Bezczynny</span>
+            </div>
+            <div class="card-body">
+              <div class="d-flex justify-content-between mb-1">
+                <span id="etapTestTrudny" class="fw-semibold">Gotowy do uruchomienia</span>
+                <span class="text-mono" id="procentTestTrudny">0%</span>
+              </div>
+              <div class="progress mb-3" style="height: 0.9rem;" role="progressbar" aria-label="Postęp testu trudnego">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" id="pasekTestTrudny" style="width: 0%"></div>
+              </div>
+
+              <div class="d-flex flex-wrap gap-2 mb-3">
+                <button class="btn btn-primary" id="btnTestTrudnyStart" type="button">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5v14l11-7z"/>
+                  </svg>
+                  Uruchom test trudny
+                </button>
+                <button class="btn btn-outline-danger" id="btnTestTrudnyStop" type="button" disabled>
+                  Przerwij
+                </button>
+                <span class="small text-muted align-self-center" id="czasTestTrudny">—</span>
+              </div>
+
+              <div class="alert alert-success d-none small" id="alertTestTrudny" role="alert"></div>
+              <div class="alert alert-danger d-none small" id="alertTestTrudnyBlad" role="alert"></div>
+
+              <label class="form-label small text-muted" for="logTestTrudny">Log</label>
+              <pre class="log-treningu mb-0" id="logTestTrudny">Test trudny nie został jeszcze uruchomiony.</pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-5">
+          <div class="card app-card mb-3">
+            <div class="card-header">Po co osobny test?</div>
+            <div class="card-body small text-muted">
+              <p class="mb-2">
+                Test z kroku 7 powstał z tych samych sesji co trening: ten sam dzień,
+                światło i kamera. Wynik 100% mówi więc tylko, że „ten test nie pokazał
+                błędu”.
+              </p>
+              <p class="mb-2">
+                Tutaj model widzi zdjęcia z <strong>innych warunków</strong>: innego dnia,
+                innego oświetlenia, innego kąta lub urządzenia. To sprawdza, czy model
+                naprawdę rozpoznaje twarz, czy tylko zapamiętał warunki sesji.
+              </p>
+              <p class="mb-0">
+                Zdjęcia zbierzesz w zakładce <strong>Dodaj twarz</strong> po włączeniu
+                opcji „Zapisz jako test trudny”. Trafiają do <code>data/raw_test</code>
+                i nigdy nie są mieszane z treningiem.
+              </p>
+            </div>
+          </div>
+
+          <div class="card app-card">
+            <div class="card-header d-flex align-items-center">
+              Ostatni raport
+              <span class="small text-muted ms-auto" id="dataRaportuTestTrudny">—</span>
+            </div>
+            <div class="card-body small" id="podsumowanieTestTrudny">
+              <span class="text-muted">Brak raportu — uruchom test trudny.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header">Łatwy test (07) vs trudny test (09)</div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0 align-middle">
+                  <thead>
+                    <tr>
+                      <th>Metryka</th>
+                      <th class="text-end">Łatwy test</th>
+                      <th class="text-end">Trudny test</th>
+                      <th class="text-end">Różnica</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tabelaPorownaniaTrudny">
+                    <tr><td colspan="4" class="text-muted small">Brak danych.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header">Metryki na osobę (prototypy)</div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0 align-middle">
+                  <thead>
+                    <tr>
+                      <th>Osoba</th>
+                      <th class="text-end">Zdjęcia</th>
+                      <th class="text-end">Poprawne</th>
+                      <th class="text-end">Recall</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tabelaMetrykTrudny">
+                    <tr><td colspan="4" class="text-muted small">Brak danych.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card mb-3">
+            <div class="card-header">Wykresy</div>
+            <div class="card-body">
+              <div class="row g-3" id="wykresyTestTrudny">
+                <div class="col-12 text-muted small">Wykresy pojawią się po teście trudnym.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="alert alert-warning small mb-0" id="ostrzezeniaTestTrudny">
+            Trudny test mierzy model w innych warunkach niż trening. Jeśli wynik jest
+            gorszy, to nie awaria — to prawdziwa informacja o tym, jak model się
+            generalizuje.
           </div>
         </div>
       </div>

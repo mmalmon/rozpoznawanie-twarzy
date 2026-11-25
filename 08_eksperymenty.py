@@ -41,7 +41,10 @@ Jak liczymy wynik?
 
   - accuracy zamknieta: kogo-kim bez opcji "nieznana osoba",
   - accuracy otwarta: z odrzucaniem obcych, przy progu EER,
-  - FAR / FRR / EER / AUC: jak w kroku 7.
+  - FAR / FRR / EER / AUC: jak w kroku 7,
+  - przedzialy ufnosci (95%): Wilson dla odsetkow, bootstrap dla EER/AUC.
+    Dzieki nim widac, czy roznica miedzy wariantami jest wieksza niz szum
+    losowania zdjec testowych.
 
 UWAGA METODOLOGICZNA (to jest sedno tego skryptu):
   Prog decyzyjny (EER) wybieramy na zbiorze WALIDACYJNYM, a metryki
@@ -57,6 +60,7 @@ Uzycie:
     python 08_eksperymenty.py
     python 08_eksperymenty.py --postep
     python 08_eksperymenty.py --batch-size 16
+    python 08_eksperymenty.py --n-bootstrap 600
 
 Wynik:
     models/eksperymenty/raport_eksperymentow.json
@@ -96,6 +100,7 @@ from common.metryki import (
     metryki_openset,
     podobienstwa_do_osob,
     podobienstwa_knn,
+    przedzialy_ufnosci,
 )
 from common.model import pobierz_urzadzenie, zbuduj_ekstraktor_cech
 from common.rozpoznawanie import NAZWA_NIEZNANEJ
@@ -109,7 +114,7 @@ PLIK_CSV = FOLDER_EKSPERYMENTOW / "wyniki.csv"
 
 NAZWA_KLASY_NIEZNAJOMY = "nieznajomy"
 NAZWA_OBCEGO = "obcy (nieznajomy)"
-WERSJA_RAPORTU = 2
+WERSJA_RAPORTU = 3
 
 # Rozmiary zbioru podajemy jako liczbe zdjec NA OSOBE. Dzieki temu wynik
 # nie zalezy od tego, ile osob jest w bazie. "None" oznacza "wszystkie".
@@ -152,6 +157,12 @@ def parsuj_argumenty() -> argparse.Namespace:
     )
     parser.add_argument("--batch-size", type=int, default=32, help="Ile zdjec naraz trafia do sieci")
     parser.add_argument("--seed", type=int, default=42, help="Ziarno losowosci (powtarzalnosc)")
+    parser.add_argument(
+        "--n-bootstrap",
+        type=int,
+        default=300,
+        help="Ile razy losowac probe w przedzialach ufnosci EER/AUC",
+    )
     parser.add_argument(
         "--postep",
         action="store_true",
@@ -272,6 +283,9 @@ def ocen_podobienstwa(
     indeksy_prawdziwe: list[int],
     osoby: list[str],
     prog: float,
+    n_bootstrap: int = 300,
+    seed: int = 42,
+    pelne_przedzialy: bool = True,
 ) -> dict:
     """Liczy metryki na zbiorze TESTOWYM przy progu wybranym na walidacji.
 
@@ -289,6 +303,29 @@ def ocen_podobienstwa(
         prawdziwe_znane, przewidziane_znane, przewidziane_obce
     )
 
+    trafienia = np.array(
+        [
+            float(prawdziwa == przewidziana)
+            for prawdziwa, przewidziana in zip(prawdziwe_znane, przewidziane_znane)
+        ],
+        dtype=float,
+    )
+    akceptacje_obcych = np.array(
+        [float(przewidziana != NAZWA_NIEZNANEJ) for przewidziana in przewidziane_obce],
+        dtype=float,
+    )
+    odrzucenia_znanych = np.array(
+        [float(przewidziana == NAZWA_NIEZNANEJ) for przewidziana in przewidziane_znane],
+        dtype=float,
+    )
+    trafienia_zamknieta = np.array(
+        [
+            float(int(podobienstwa_znane[numer].argmax()) == prawdziwy)
+            for numer, prawdziwy in enumerate(indeksy_prawdziwe)
+        ],
+        dtype=float,
+    )
+
     return {
         "accuracy_zamknieta": round(
             accuracy_zamknieta(podobienstwa_znane, indeksy_prawdziwe), 4
@@ -302,6 +339,17 @@ def ocen_podobienstwa(
         "prog_zrodlo": "walidacja",
         "zaakceptowani_obcy": metryki["zaakceptowani_obcy"],
         "odrzucone_znane": metryki["odrzucone_znane"],
+        "przedzialy_ufnosci": przedzialy_ufnosci(
+            trafienia,
+            akceptacje_obcych,
+            odrzucenia_znanych,
+            wlasne,
+            obce,
+            n_bootstrap=n_bootstrap,
+            seed=seed,
+            pelne=pelne_przedzialy,
+            trafienia_zamknieta=trafienia_zamknieta,
+        ),
     }
 
 
@@ -317,6 +365,8 @@ def ocen_prototypy(
     test_obce: torch.Tensor,
     prawdziwe_test: list[str],
     indeksy_prawdziwe_test: list[int],
+    n_bootstrap: int = 300,
+    seed: int = 42,
 ) -> tuple[dict, int]:
     """Buduje prototypy, wybiera prog na walidacji i ocenia na tescie.
 
@@ -338,6 +388,8 @@ def ocen_prototypy(
         indeksy_prawdziwe_test,
         osoby,
         prog,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
     )
     liczba_prototypow = sum(
         int(wpis["prototypy"].shape[0]) for wpis in wzorce.values()
@@ -570,6 +622,22 @@ def zbuduj_wnioski(
                 "podniesiemy tego limitu."
             )
 
+    if rozmiary:
+        ci_accuracy = (
+            rozmiary[-1]["metryki"].get("przedzialy_ufnosci", {})
+            .get("metryki", {})
+            .get("accuracy")
+        )
+        if ci_accuracy:
+            szerokosc = (ci_accuracy[1] - ci_accuracy[0]) * 100
+            wnioski.append(
+                f"95% przedzial ufnosci accuracy dla wariantu 'wszystkie' to "
+                f"{ci_accuracy[0]:.1%}-{ci_accuracy[1]:.1%} (szerokosc ok. "
+                f"{szerokosc:.1f} pkt proc.). Roznice miedzy wariantami mniejsze "
+                "niz ta szerokosc moga byc tylko szumem losowania zdjec testowych, "
+                "a nie prawdziwa roznica miedzy metodami."
+            )
+
     if len(jasnosci) == 2:
         oryginal, warianty = jasnosci[0], jasnosci[1]
         wnioski.append(
@@ -644,6 +712,16 @@ def zbuduj_wnioski(
 # =========================================================================
 # CSV
 # =========================================================================
+def _granice_ci(metryki: dict, klucz: str) -> tuple[float | str, float | str]:
+    """Dolna i gorna granica przedzialu ufnosci (puste, gdy brak danych)."""
+    przedzial = (
+        (metryki.get("przedzialy_ufnosci") or {}).get("metryki", {}).get(klucz)
+    )
+    if not przedzial:
+        return "", ""
+    return przedzial[0], przedzial[1]
+
+
 def zapisz_csv(
     rozmiary: list[dict], jasnosci: list[dict], knn: list[dict], progi: list[dict]
 ) -> None:
@@ -660,6 +738,12 @@ def zapisz_csv(
         "eer",
         "auc",
         "prog_eer",
+        "accuracy_ci_dol",
+        "accuracy_ci_gora",
+        "far_ci_dol",
+        "far_ci_gora",
+        "eer_ci_dol",
+        "eer_ci_gora",
     ]
 
     with open(PLIK_CSV, "w", encoding="utf-8", newline="") as plik:
@@ -680,6 +764,9 @@ def zapisz_csv(
                     wpis["metryki"]["eer"],
                     wpis["metryki"]["auc"],
                     wpis["metryki"]["prog_eer"],
+                    *_granice_ci(wpis["metryki"], "accuracy"),
+                    *_granice_ci(wpis["metryki"], "far"),
+                    *_granice_ci(wpis["metryki"], "eer"),
                 ]
             )
 
@@ -697,6 +784,9 @@ def zapisz_csv(
                     wpis["metryki"]["eer"],
                     wpis["metryki"]["auc"],
                     wpis["metryki"]["prog_eer"],
+                    *_granice_ci(wpis["metryki"], "accuracy"),
+                    *_granice_ci(wpis["metryki"], "far"),
+                    *_granice_ci(wpis["metryki"], "eer"),
                 ]
             )
 
@@ -714,6 +804,9 @@ def zapisz_csv(
                     wpis["metryki"]["eer"],
                     wpis["metryki"]["auc"],
                     wpis["metryki"]["prog_eer"],
+                    *_granice_ci(wpis["metryki"], "accuracy"),
+                    *_granice_ci(wpis["metryki"], "far"),
+                    *_granice_ci(wpis["metryki"], "eer"),
                 ]
             )
 
@@ -731,6 +824,10 @@ def zapisz_csv(
                     "",
                     "",
                     "",
+                    *_granice_ci(wpis, "accuracy"),
+                    *_granice_ci(wpis, "far"),
+                    "",
+                    "",
                 ]
             )
 
@@ -742,6 +839,8 @@ def main() -> None:
     argumenty = parsuj_argumenty()
     if argumenty.batch_size <= 0:
         raise SystemExit("--batch-size musi byc dodatni.")
+    if argumenty.n_bootstrap <= 0:
+        raise SystemExit("--n-bootstrap musi byc dodatnie.")
 
     folder_train = FOLDER_PRZETWORZONYCH_DANYCH / "train"
     folder_val = FOLDER_PRZETWORZONYCH_DANYCH / "val"
@@ -946,6 +1045,8 @@ def main() -> None:
             embeddingi_obce,
             prawdziwe_test_znane,
             indeksy_prawdziwe_test,
+            n_bootstrap=argumenty.n_bootstrap,
+            seed=argumenty.seed,
         )
         etykieta = "wszystkie" if limit is None else str(limit)
         rozmiary.append(
@@ -998,6 +1099,8 @@ def main() -> None:
             embeddingi_obce,
             prawdziwe_test_znane,
             indeksy_prawdziwe_test,
+            n_bootstrap=argumenty.n_bootstrap,
+            seed=argumenty.seed,
         )
         jasnosci.append(
             {
@@ -1051,6 +1154,8 @@ def main() -> None:
             indeksy_prawdziwe_test,
             osoby,
             prog,
+            n_bootstrap=argumenty.n_bootstrap,
+            seed=argumenty.seed,
         )
         knn.append(
             {
@@ -1096,6 +1201,9 @@ def main() -> None:
             indeksy_prawdziwe_test,
             osoby,
             prog,
+            n_bootstrap=argumenty.n_bootstrap,
+            seed=argumenty.seed,
+            pelne_przedzialy=False,
         )
         progi.append(
             {
@@ -1109,6 +1217,7 @@ def main() -> None:
                 "frr": metryki["frr"],
                 "zaakceptowani_obcy": metryki["zaakceptowani_obcy"],
                 "odrzucone_znane": metryki["odrzucone_znane"],
+                "przedzialy_ufnosci": metryki["przedzialy_ufnosci"],
             }
         )
         postep.dodaj(1)

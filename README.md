@@ -22,6 +22,8 @@ w czasie rzeczywistym.
 10. [Usuwanie danych osób po zakończeniu](#usuwanie-danych-osób-po-zakończeniu)
 11. [Krok 5 — ewaluacja modelu](#krok-5--ewaluacja-modelu)
 12. [Krok 6 — eksperymenty](#krok-6--eksperymenty)
+13. [Krok 7 — test trudny](#krok-7--test-trudny)
+14. [Przedziały ufności — jak czytać niepewność wyniku](#przedziały-ufności--jak-czytać-niepewność-wyniku)
 
 ## Jak to działa (teoria dla uczniów)
 
@@ -127,20 +129,21 @@ rozpoznawanie twarzy/
 ├── 04_rozpoznawanie_na_zywo.py  # krok 4: rozpoznawanie na żywo z kamery
 ├── 05_ekran_z_kawalami.py       # pomocniczy: ekran z kawałami sterowany gestem (MediaPipe)
 ├── 06_usun_dane_osoby.py        # pomocniczy: usuwa zdjęcia i wzorce wybranych osób
-├── 07_ewaluacja.py              # krok 7: metryki, macierz pomyłek, porównanie metod
-├── 08_eksperymenty.py           # krok 8: wpływ liczby zdjęć, jasności, k w k-NN i progu
+├── 07_ewaluacja.py              # krok 5: metryki, macierz pomyłek, porównanie metod, CI
+├── 08_eksperymenty.py           # krok 6: wpływ liczby zdjęć, jasności, k w k-NN i progu
+├── 09_test_trudny.py            # krok 7: osobny, trudny zbiór testowy + CI
 ├── listuj_kamery.py             # pomocniczy: wypisuje dostępne kamery i ich rozdzielczości
 ├── pobierz_zdjecia_nieznajomych.py  # pomocniczy: pobiera zdjecia "obcych" osob do kalibracji progu
 ├── Uruchom panel.bat            # dwuklik: uruchamia panel GUI (szuka Pythona z .venv)
 ├── common/
 │   ├── camera.py                # obsługa kamery (wybór, otwieranie, wymuszenie MJPG/4K)
 │   ├── dane_osob.py             # lista osób, numeracja zdjęć, bezpieczny odczyt JSON
-│   ├── embeddingi.py            # wspólne liczenie embeddingów (07, 08 i GUI)
+│   ├── embeddingi.py            # wspólne liczenie embeddingów (07, 08, 09 i GUI)
 │   ├── emotions.py              # rozpoznawanie emocji (FER+)
 │   ├── face_detector.py         # detekcja twarzy (YuNet z modele/, zapas: kaskada Haara)
 │   ├── gesture.py               # wykrywanie gestu "ręka nad głową" (MediaPipe Pose)
 │   ├── imgio.py                 # zapis/odczyt zdjęć odporny na polskie znaki w ścieżce
-│   ├── metryki.py               # wspólne metryki: FAR/FRR/EER/AUC, k-NN, prototypy
+│   ├── metryki.py               # metryki FAR/FRR/EER/AUC, k-NN, prototypy i przedziały ufności
 │   ├── modele/                  # modele ONNX/task (YuNet, FER+, MediaPipe Pose; poza Git)
 │   ├── model.py                 # definicja modelu (ekstraktor cech / embeddingi)
 │   ├── rozpoznawanie.py         # wspólna logika: wzorce, dopasowanie, emocje (04 + GUI)
@@ -153,6 +156,7 @@ rozpoznawanie twarzy/
 │   ├── trening.py               # uruchamianie 02 + 03 z paskiem postępu i logiem
 │   ├── ewaluacja.py             # uruchamianie 07 z paskiem postępu i logiem
 │   ├── eksperymenty.py          # uruchamianie 08 z paskiem postępu i logiem
+│   ├── test_trudny.py           # uruchamianie 09 z paskiem postępu i logiem
 │   ├── tkinter_app.py           # awaryjne GUI w Tkinterze
 │   ├── templates/index.html     # widok panelu
 │   ├── static/                  # Bootstrap 5 (lokalnie), własny CSS i JS
@@ -163,12 +167,14 @@ rozpoznawanie twarzy/
 ├── detection/                   # zgodność wsteczna: re-eksport src/detection/detector.py
 ├── data/
 │   ├── raw/<osoba>/             # surowe zdjęcia z kamery (per osoba)
+│   ├── raw_test/<osoba>/        # zdjęcia do testu trudnego (nie wchodzą do treningu)
 │   └── processed/{train,val,test}/  # dane po podziale, gotowe do treningu i oceny
 ├── models/
 │   ├── wzorce_osob.json         # wzorce zdjec tozsamosci + skalibrowane progi
 │   ├── kalibracja_progu.png     # wykres pomagajacy zrozumiec dobor progu
 │   ├── ewaluacja/               # raport.json, wykresy/*.png, pomylki/*.jpg (po 07)
-│   └── eksperymenty/            # raport_eksperymentow.json, wyniki.csv, wykresy/*.png (po 08)
+│   ├── eksperymenty/            # raport_eksperymentow.json, wyniki.csv, wykresy/*.png (po 08)
+│   └── test_trudny/             # raport_test_trudny.json, wykresy/*.png (po 09)
 ├── requirements.txt
 └── README.md
 ```
@@ -181,9 +187,10 @@ rozpoznawanie twarzy/
 > osobną implementacją. Gdy WebView2 nie działa, uruchom awaryjne GUI:
 > `python gui/tkinter_app.py`.
 
-Foldery `data/raw`, `data/processed`, `models` oraz `common/modele` są celowo
-puste w repozytorium (`.gitignore`) — zawierają dane osobowe (zdjęcia twarzy)
-i duże pliki binarne, których nie powinno się trzymać w Git.
+Foldery `data/raw`, `data/raw_test`, `data/processed`, `models` oraz
+`common/modele` są celowo puste w repozytorium (`.gitignore`) — zawierają dane
+osobowe (zdjęcia twarzy) i duże pliki binarne, których nie powinno się trzymać
+w Git.
 
 Pliki modeli pobierz osobno i wgraj do `common/modele/`:
 
@@ -312,18 +319,27 @@ Panel prowadzi cały proces:
 - **Dodaj twarz** — wpisujesz nazwę osoby i cel (np. 300 zdjęć), a panel
   zapisuje wycięte twarze 224×224 do `data/raw/<osoba>/` co ok. 0,3 s —
   dokładnie tak jak `01_zbieranie_danych.py` w trybie automatycznym.
+  Przełącznik **Zapisz jako test trudny** kieruje zdjęcia do
+  `data/raw_test/<osoba>/` — osobnego zbioru, którego nie używamy do treningu
+  ani kalibracji progu.
 - **Trening** — uruchamia `02_podzial_danych.py`, a potem
   `03_trenowanie_modelu.py --postep` w osobnym procesie; czyta maszynowe
   linie postępu (`[postep-start]`, `[postep]`), pokazuje pasek, etap i log.
   Trening można przerwać przyciskiem „Przerwij”.
 - **Ewaluacja** — uruchamia `07_ewaluacja.py --postep` w osobnym procesie
   i pokazuje raport: accuracy, FAR/FRR, EER, AUC, metryki na osobę,
-  porównanie metod, wykresy PNG i galerię pomyłek. Szczegóły w sekcji
+  porównanie metod, wykresy PNG i galerię pomyłek. Karty i tabele pokazują
+  też **95% przedziały ufności**. Szczegóły w sekcji
   [Krok 5 — ewaluacja modelu](#krok-5--ewaluacja-modelu).
 - **Eksperymenty** — uruchamia `08_eksperymenty.py --postep` i pokazuje
   wpływ liczby zdjęć, jasności, `k` w k-NN i progu decyzyjnego: tabelę
-  wyników, wykresy i automatyczne wnioski. Szczegóły w sekcji
+  wyników, wykresy i automatyczne wnioski. Tabela wariantów ma kolumnę
+  przedziału ufności accuracy. Szczegóły w sekcji
   [Krok 6 — eksperymenty](#krok-6--eksperymenty).
+- **Test trudny** — uruchamia `09_test_trudny.py --postep --folder
+  data/raw_test` i porównuje wynik z łatwym testem z kroku 5: tabela
+  „łatwy vs trudny”, metryki na osobę, wykresy i przedziały ufności.
+  Szczegóły w sekcji [Krok 7 — test trudny](#krok-7--test-trudny).
 - **Baza twarzy** — miniatury, liczba zdjęć i usuwanie osoby (opcjonalnie z
   ponownym treningiem). Usunięcie ostatniej osoby czyści wzorce.
 
@@ -344,7 +360,8 @@ lit. f); patrz uwagi o prywatności wyżej.
 ## Tutorial krok po kroku
 
 > Ten sam proces możesz przejść w panelu **Dodaj twarz → Trening →
-> Ewaluacja → Eksperymenty → Rozpoznawanie** (patrz sekcja [Panel GUI](#5-panel-gui-opcjonalnie-ale-wygodnie)).
+> Ewaluacja → Eksperymenty → Test trudny → Rozpoznawanie** (patrz sekcja
+> [Panel GUI](#5-panel-gui-opcjonalnie-ale-wygodnie)).
 > Poniższe kroki pokazują, co dokładnie dzieje się pod spodem — warto je
 > przejść przynajmniej raz z konsoli, żeby zobaczyć surowe komunikaty.
 
@@ -390,6 +407,17 @@ Jeśli chcesz zapisywać materiał z pełnego 4K, dopisz
 > wyłącznie do automatycznej kalibracji progu podobieństwa w kroku 3 (patrz
 > niżej), więc ich stylistyczna odmienność od zdjęć z kamery nie stanowi
 > już problemu (w odróżnieniu od podejścia klasyfikacyjnego).
+>
+> **Test trudny zbieraj osobno.** Zdjęcia do kroku 7 (inny dzień, inne
+> światło, inne urządzenie) zapisuj do `data/raw_test`, a nie do
+> `data/raw` — dopisz `--folder data/raw_test`:
+>
+> ```powershell
+> python 01_zbieranie_danych.py --osoba jan_kowalski --cel 80 --folder data/raw_test
+> ```
+>
+> Dzięki temu zdjęcia testowe nigdy nie trafią do treningu ani do kalibracji
+> progu. W panelu robi to przełącznik **Zapisz jako test trudny**.
 
 ### Krok 2 — podział na zbiór treningowy, walidacyjny i testowy
 
@@ -497,7 +525,11 @@ zdjęć klasy `nieznajomy` ze zbiorów `train` i `test` — celowo **bez**
   „Nieznana osoba”,
 - **EER** — punkt, w którym FAR = FRR; jedna liczba do porównywania metod,
 - **AUC** — jak dobrze sam ranking podobieństw rozdziela swoich od obcych
-  (1,0 = idealnie, 0,5 = losowo).
+  (1,0 = idealnie, 0,5 = losowo),
+- **95% przedziały ufności** dla accuracy, FAR i FRR (metoda Wilsona) oraz
+  dla EER i AUC (bootstrap) — czyli informację, jak niepewny jest każdy
+  wynik przy tej liczbie zdjęć. Wyjaśnienie w sekcji
+  [Przedziały ufności](#przedziały-ufności--jak-czytać-niepewność-wyniku).
 
 Na koniec porównuje trzy metody na **tych samych embeddingach**:
 prototypy z pliku wzorców (tak jak `04`), **k-NN** oraz **regresję
@@ -507,28 +539,38 @@ jest ostatnim słowem.
 
 Przykładowe wyniki na zbiorze testowym (130 znanych zdjęć + 128 obcych):
 
-| Metoda | Accuracy | FAR | FRR | EER | AUC |
-| --- | --- | --- | --- | --- | --- |
-| Prototypy (progi z `03`) | 100,0% | 0,0% | 0,0% | 0,0% | 1,000 |
-| k-NN (k = 5) | 100,0% | 4,7% | 0,0% | 0,0% | 1,000 |
-| Regresja logistyczna | 96,9% | 0,8% | 3,1% | 2,7% | 0,999 |
+| Metoda | Accuracy | 95% CI accuracy | FAR | FRR | EER | AUC |
+| --- | --- | --- | --- | --- | --- | --- |
+| Prototypy (progi z `03`) | 100,0% | 97,1–100,0% | 0,0% | 0,0% | 0,0% | 1,000 |
+| k-NN (k = 5) | 100,0% | 97,1–100,0% | 4,7% | 0,0% | 0,0% | 1,000 |
+| Regresja logistyczna | 96,9% | 92,4–98,8% | 0,8% | 3,1% | 2,7% | 0,999 |
 
 Widać ciekawą rzecz: k-NN ma idealne accuracy, ale wpuszcza 4,7% obcych,
 a regresja jest ostrożniejsza — rzadziej wpuszcza obcego, za to częściej
 odrzuca swoich. **Nie ma jednej „najlepszej” metody** — wybór zależy od
 tego, który błąd jest w danym zastosowaniu gorszy.
 
+Przedział ufności mówi, jak precyzyjny jest pomiar. Dla prototypów accuracy
+100% ma przedział 97,1–100,0%, a FAR 0% — przedział 0,0–2,9%. To znaczy:
+przy innych 130 zdjęciach testowych wynik mógłby wyjść trochę gorszy, nawet
+gdyby model się nie zmienił. Przy 128 obcych zdjęciach jeden fałszywy alarm
+to skok FAR o 0,8 pkt proc., więc przedział jest szeroki. Przedziały metod
+mogą na siebie nachodzić — wtedy **nie wolno** ogłaszać, że jedna metoda
+jest lepsza. Potrzeba więcej danych albo trudniejszego testu.
+
 Wyniki trafiają do:
 
 ```
-models/ewaluacja/raport_ewaluacji.json   # wszystkie liczby i ostrzeżenia
-models/ewaluacja/wykresy/*.png           # macierz, rozkład, FAR/FRR, PCA, porównanie
+models/ewaluacja/raport_ewaluacji.json   # wszystkie liczby, przedziały ufności i ostrzeżenia
+models/ewaluacja/wykresy/*.png           # macierz, rozkład, FAR/FRR, PCA, porównanie, CI
 models/ewaluacja/pomylki/*.jpg           # galeria najciekawszych błędów
 ```
 
 Opcje przydatne na lekcji: `--k-sasiadow 7` (inne `k` w k-NN),
-`--maks-pomylek 12` (ile zdjęć zapisać do galerii; `0` = nie zapisuj) oraz
-`--postep` (maszynowe linie postępu dla panelu GUI).
+`--maks-pomylek 12` (ile zdjęć zapisać do galerii; `0` = nie zapisuj),
+`--n-bootstrap 400` (ile losowań bootstrapu dla EER/AUC; mniej = szybciej,
+ale szerszy i mniej stabilny przedział) oraz `--postep` (maszynowe linie
+postępu dla panelu GUI).
 
 > **Metodologia — dlaczego ten wynik jest uczciwy.** Próg każdej osoby
 > pochodzi z kroku 3 i został skalibrowany na zbiorze walidacyjnym. Próg
@@ -547,6 +589,12 @@ Opcje przydatne na lekcji: `--k-sasiadow 7` (inne `k` w k-NN),
 > Dlatego wynik 100% na teście nie oznacza „model jest idealny” — oznacza
 > „ten konkretny test nie pokazał błędu”. Ostrzeżenia są zapisane w
 > raporcie JSON i pokazane w panelu.
+>
+> **Przedział ufności to nie ozdoba.** Każda liczba w raporcie ma obok
+> siebie przedział 95%. Jeśli dwa warianty mają accuracy 100% i 98%, ale
+> ich przedziały mocno na siebie nachodzą, to różnica może być zwykłym
+> przypadkiem — zależy, które konkretnie zdjęcia wylosowano do testu.
+> Porównuj przedziały, nie tylko wartości środkowe.
 
 ### Jak czytać wykresy z ewaluacji
 
@@ -564,6 +612,11 @@ Opcje przydatne na lekcji: `--k-sasiadow 7` (inne `k` w k-NN),
   powinny leżeć poza klastrami.
 - **Porównanie metod** — accuracy (zamknięta, bez opcji „nieznana”)
   i EER dla prototypów, k-NN i regresji logistycznej.
+- **Przedziały ufności (95%)** — słupek to zmierzona wartość, a czarny
+  odcinek to przedział. Krótki odcinek = precyzyjny pomiar; długi = mało
+  danych albo wynik blisko 0%/100%, gdzie przedział z natury jest szerszy.
+  Jeśli przedziały dwóch metod zachodzą na siebie, nie twierdź, że jedna
+  jest lepsza.
 
 ### Krok 6 — eksperymenty
 
@@ -593,10 +646,11 @@ Skrypt przeprowadza cztery eksperymenty:
 
 Dla każdego wariantu liczone są te same metryki co w kroku 5: accuracy
 zamknięta (kogo-kim, bez odrzucania), accuracy otwarta (z opcją
-„nieznana osoba”), FAR, FRR, EER i AUC. Próg decyzyjny wybieramy w punkcie
-EER **na zbiorze walidacyjnym** i stosujemy bez zmian do **testu** — tam
-też liczymy wszystkie metryki. Dzięki temu eksperymenty oceniają uczciwie,
-a nie na danych, z których wybierano próg.
+„nieznana osoba”), FAR, FRR, EER i AUC — każda z 95% przedziałem ufności.
+Próg decyzyjny wybieramy w punkcie EER **na zbiorze walidacyjnym** i
+stosujemy bez zmian do **testu** — tam też liczymy wszystkie metryki. Dzięki
+temu eksperymenty oceniają uczciwie, a nie na danych, z których wybierano
+próg.
 
 Przykładowe wyniki na danych projektu (3 osoby, 615 znanych zdjęć
 treningowych + 106 obcych, 130 znanych zdjęć testowych + 22 obcych,
@@ -618,6 +672,12 @@ Na tych danych accuracy jest **sufitowa** (100% w każdym wariancie), więc
 różnice widać dopiero w EER, FAR i w tabeli progów. To też jest lekcja:
 przy łatwym zbiorze trzeba patrzeć na trudniejsze miary, a nie tylko na
 jedną „ładną” liczbę.
+
+Przedział 95% accuracy dla wariantu „wszystkie” to 97,1–100,0%, czyli ma
+szerokość ok. 2,9 pkt proc. **Każda różnica między wariantami mniejsza niż
+ta szerokość może być tylko szumem losowania zdjęć testowych**, a nie
+prawdziwą różnicą. To dlatego tabela wariantów ma kolumnę CI — bez niej
+łatwo przeceniłoby się znaczenie drobnych skoków.
 
 Dwa efekty warte omówienia z klasą:
 
@@ -645,7 +705,9 @@ models/eksperymenty/wykresy/*.png              # cztery wykresy opisane niżej
 ```
 
 Opcje: `--batch-size 16` (ile zdjęć naraz trafia do sieci), `--seed 42`
-(powtarzalność) oraz `--postep` (maszynowe linie postępu dla panelu GUI).
+(powtarzalność), `--n-bootstrap 300` (losowania bootstrapu dla EER/AUC;
+zmniejszenie przyspiesza kosztem mniej stabilnego przedziału) oraz
+`--postep` (maszynowe linie postępu dla panelu GUI).
 
 ### Jak czytać wykresy z eksperymentów
 
@@ -666,6 +728,137 @@ Opcje: `--batch-size 16` (ile zdjęć naraz trafia do sieci), `--seed 42`
 > dlatego wynik jest uczciwy. Jest jednak mały, więc pojedyncza pomyłka
 > zmienia procent o kilka punktów. Ostrzeżenia są zapisane w raporcie JSON
 > i pokazane w panelu.
+>
+> **Przedziały ufności a wnioski.** W eksperymentach porównujemy warianty,
+> które różnią się jednym parametrem. Jeśli ich przedziały ufności zachodzą
+> na siebie, wniosek brzmi „na tym zbiorze nie widać różnicy”, a nie
+> „parametr X jest lepszy”. To najczęstszy błąd w szkolnych prezentacjach
+> wyników — i dlatego raport wypisuje ostrzeżenie o szerokości CI.
+
+### Krok 7 — test trudny
+
+Krok 5 odpowiada na pytanie „jak model działa na zdjęciach z tej samej
+sesji?”. Krok 7 zadaje trudniejsze pytanie: **czy model działa też poza
+warunkami treningu?** Do tego potrzebny jest osobny zbiór zdjęć, którego
+model nigdy nie widział — z innego dnia, innego oświetlenia, innego kąta,
+a najlepiej z innego urządzenia.
+
+```powershell
+python 09_test_trudny.py
+```
+
+Skrypt domyślnie czyta `data/raw_test`, a nie `data/processed/test`.
+To celowe: zdjęcia z `data/raw_test` **nie przechodzą przez krok 2**, więc
+nie trafiają ani do treningu, ani do walidacji, ani do kalibracji progu.
+
+**Skąd wziąć zdjęcia do testu trudnego?**
+
+- Z konsoli: `python 01_zbieranie_danych.py --osoba jan_kowalski --cel 80
+  --folder data/raw_test` (parametr `--folder` zmienia folder docelowy).
+- W panelu: zakładka **Dodaj twarz** → przełącznik **Zapisz jako test
+  trudny**. Zdjęcia trafią do `data/raw_test/<osoba>/`.
+- Zbierz je **później niż dane treningowe** — po kilku dniach, w innym
+  pomieszczeniu, przy innym świetle, ewentualnie inną kamerą. Jeśli zbierzesz
+  je w tej samej sesji, test nie będzie trudny, choć będzie miał inną nazwę.
+- Warto też dodać folder `data/raw_test/nieznajomy/` ze zdjęciami osób
+  spoza bazy — bez nich skrypt nie policzy FAR, EER ani AUC.
+- Nie musi być dużo: 30–80 zdjęć na osobę wystarczy, żeby zobaczyć kierunek
+  zmiany. Pamiętaj jednak, że mała próba = szeroki przedział ufności.
+
+Co robi `09_test_trudny.py`:
+
+1. Wczytuje wzorce i progi z `models/wzorce_osob.json` (model z kroku 3 —
+   **nic nie jest dotrenowywane**).
+2. Liczy embeddingi zdjęć z `data/raw_test`. Podfoldery o nazwach osób z
+   modelu to twarze znane. Foldery spoza modelu (np. `nieznajomy`, ale też
+   każda nowa osoba) są traktowane jako **obcy**.
+3. Liczy accuracy, FAR, FRR, EER i AUC oraz 95% przedziały ufności, a także
+   recall dla każdej osoby i macierz pomyłek.
+4. Jeśli istnieje raport z kroku 5 (`models/ewaluacja/raport_ewaluacji.json`),
+   porównuje wynik trudny z łatwym i pokazuje różnicę w punktach
+   procentowych.
+5. Zapisuje raport i wykresy:
+
+```
+models/test_trudny/raport_test_trudny.json  # liczby, CI, porównanie, ostrzeżenia
+models/test_trudny/wykresy/*.png            # podsumowanie, porównanie, rozkład, macierz
+```
+
+Opcje: `--folder data/raw_test` (inny folder testu), `--n-bootstrap 400`
+(liczba losowań dla EER/AUC), `--batch-size 32`, `--seed 42` oraz `--postep`
+(dla panelu GUI).
+
+**Jak interpretować wynik?**
+
+- Wynik **taki sam jak w kroku 5** (np. nadal 100%) oznacza, że albo nowe
+  zdjęcia nie są wystarczająco trudne, albo model naprawdę się generalizuje.
+  Sprawdź, czy na pewno różnią się warunki — inaczej test nic nie wnosi.
+- Wynik **gorszy** to nie awaria, tylko prawdziwa informacja: model częściowo
+  nauczył się warunków sesji, a nie samych twarzy. To najważniejsza lekcja
+  tego kroku.
+- Brak zdjęć obcych → FAR, EER i AUC są pomijane (`null`), a skrypt wypisuje
+  ostrzeżenie. To nie błąd, tylko brak danych do pomiaru.
+- Brak zdjęć niektórych osób → skrypt ostrzega, ale liczy dalej na tym, co
+  jest. Accuracy dotyczy wtedy tylko obecnych osób.
+- **Nie poprawiaj modelu „pod” test trudny.** Jeśli po zobaczeniu wyniku
+  zmienisz próg albo dobierzesz zdjęcia, zbiór przestaje być testem, a staje
+  się kolejnym zbiorem walidacyjnym. Test trudny to egzamin, nie trening.
+
+### Jak czytać wykresy z testu trudnego
+
+- **Podsumowanie testu trudnego** — słupki accuracy, FAR, FRR i EER z
+  pionowymi odcinkami 95% CI. Długi odcinek oznacza, że zdjęć jest mało
+  i wynik jest niepewny.
+- **Łatwy test vs trudny test** — te same metryki obok siebie. Dopiero ta
+  para pokazuje, ile „wart” był łatwy wynik z kroku 5.
+- **Rozkład podobieństw** — czy znane twarze z nowych warunków nadal leżą
+  po prawej, a obcy po lewej. Jeśli rozkłady się zlewają, próg z kroku 3
+  jest za niski dla tych warunków.
+- **Macierz pomyłek** — wiersze to prawda, kolumny to decyzja modelu.
+  Kolumna „Nieznana osoba” pokazuje, ile razy model odrzucił znaną twarz,
+  a wiersz „obcy” — ile razy wpuścił kogoś spoza bazy.
+
+## Przedziały ufności — jak czytać niepewność wyniku
+
+Każda liczba w raportach (`100%`, `0%`, `EER 2,7%`) jest **oszacowaniem
+z próby**, a nie prawdą absolutną. Gdybyśmy zebrali inne 130 zdjęć
+testowych, wynik mógłby wyjść trochę inny — nawet gdyby model się nie
+zmienił. Przedział ufności mówi właśnie, **jak dużej zmiany można się
+spodziewać od samego losowania zdjęć**.
+
+W projekcie używamy dwóch metod:
+
+- **Wilsona** — dla odsetków: accuracy, FAR, FRR. To ten sam rachunek, co
+  „poparcie 45% ± 3 pkt proc.” w sondażach. Działa dobrze także przy
+  wynikach 0% i 100%, gdzie naiwny wzór daje przedział o szerokości zera.
+- **Bootstrap** — dla EER i AUC. Losujemy ze zwracaniem tyle samo zdjęć,
+  ile mamy, liczymy metrykę, powtarzamy `--n-bootstrap` razy (domyślnie
+  400) i odcinamy skrajne 2,5% wyników z każdej strony. To odpowiedź na
+  pytanie: „gdyby test wyglądał trochę inaczej, jaki wynik moglibyśmy
+  dostać?”. Ziarno `--seed 42` sprawia, że wynik jest powtarzalny.
+
+Przykład z danych projektu (130 znanych zdjęć, 128 obcych):
+
+| Pomiar | Wynik | 95% CI | Jak to czytać |
+| --- | --- | --- | --- |
+| Accuracy | 100,0% | 97,1–100,0% | prawdziwa skuteczność może być bliżej 97% |
+| FAR | 0,0% | 0,0–2,9% | w innych 128 obcych zdjęciach mogłoby wpaść ok. 4 osoby |
+| FRR | 0,0% | 0,0–2,9% | model mógłby odrzucić do ok. 4 znanych zdjęć |
+| EER | 0,0% | 0,0–0,0% | przy idealnym rozdzieleniu bootstrap też daje same zera |
+
+Ostatni wiersz to ważna pułapka: **przedział 0–0 nie znaczy „pewność
+absolutna”**. Przy idealnym rozdzieleniu każda próbka bootstrapu daje EER
+0%, więc metoda nie widzi niepewności. Dlatego accuracy, FAR i FRR liczymy
+metodą Wilsona, która przy 0 błędach nadal daje sensowny przedział.
+
+Trzy zasady, które warto zapamiętać:
+
+1. **Mała próba = szeroki przedział.** Na mini-teście 8 znanych zdjęć
+   accuracy 100% ma przedział 67,6–100,0% — prawie nic nie wiadomo.
+2. **Nachodzące przedziały = brak dowodu różnicy.** Jeśli metoda A ma
+   97–100%, a metoda B 92–99%, nie można ogłosić, że A jest lepsza.
+3. **Przedział nie opisuje pojedynczej osoby.** To niepewność średniej
+   dla całego zbioru, a nie „ten uczeń zostanie rozpoznany w 97%”.
 
 ## Jak przygotować dobre materiały treningowe
 
@@ -802,6 +995,20 @@ Ten projekt naprawia to automatycznie (`common/camera.py` wywołuje
   Bluetooth i urządzenia > Kamery > [Wasza kamera] > Ustawienia
   zaawansowane.
 
+**Test trudny nie chce się uruchomić: „Folder data/raw_test nie ma zdjęć
+w podfolderach osób”.**
+Skrypt `09` czyta wyłącznie `data/raw_test`, a nie `data/raw` ani
+`data/processed/test`. Zbierz zdjęcia z `--folder data/raw_test` (albo
+włącz **Zapisz jako test trudny** w panelu). Każda osoba musi mieć własny
+podfolder, np. `data/raw_test/jan_kowalski/`. Folder `nieznajomy` jest
+opcjonalny, ale bez niego nie da się policzyć FAR, EER ani AUC.
+
+**W teście trudnym mam tylko kilka zdjęć i przedziały ufności są ogromne.**
+To normalne: przy 8 zdjęciach accuracy 100% ma przedział 67,6–100,0%.
+Do wiarygodnego wniosku potrzeba kilkudziesięciu zdjęć na osobę. Możesz też
+uruchomić `09` kilka razy z różnymi `--seed`, żeby zobaczyć, jak bardzo
+wynik zależy od losowania.
+
 ## Pomysły na rozszerzenie projektu (zadania dla uczniów)
 
 - Zamienić kaskadę Haara na nowocześniejszy detektor (np. MediaPipe Face
@@ -815,15 +1022,23 @@ Ten projekt naprawia to automatycznie (`common/camera.py` wywołuje
   CSV/bazy danych — np. jako prosty system obecności na zajęciach.
 - Poeksperymentować z inną architekturą backbone'u (np.
   `resnet18`, `efficientnet_b0`) i porównać dokładność/szybkość.
-- Zebrać **trudniejszy zbiór testowy** (zdjęcia z innego dnia, innego
-  urządzenia, gorsze światło) i podmienić `data/processed/test`. Projekt ma
-  już uczciwy podział train/val/test — sprawdźcie, o ile wynik spadnie,
-  gdy test przestanie być „łatwy”. To najważniejsze ćwiczenie z metodologii
-  eksperymentu.
-- Zbadać wpływ progu decyzyjnego na FAR/FRR w praktyce: przy jakim progu
+- **Zebrać trudniejszy zbiór testowy** (zdjęcia z innego dnia, innego
+  urządzenia, gorszego światła) do `data/raw_test` i uruchomić
+  `python 09_test_trudny.py`. Sprawdźcie, o ile wynik spadnie względem
+  łatwego testu z `07` i czy przedziały ufności nadal się nie nakładają.
+  To najważniejsze ćwiczenie z metodologii eksperymentu.
+- **Zbadać wpływ progu decyzyjnego na FAR/FRR w praktyce:** przy jakim progu
   system wpuszcza obcych, a przy jakim odmawia dostępu własnym osobom?
-- Zmierzyć wpływ liczby zdjęć treningowych na dokładność (np. wytrenować
-  model na 50, 100, 200 zdjęciach na osobę i porównać wyniki).
+- **Zwiększyć `--n-bootstrap`** (np. do 1000) i sprawdzić, czy przedział
+  ufności EER/AUC się uspokaja. Zmienić `--seed` i zobaczyć, o ile wynik
+  się przesuwa — to pokazuje, że bootstrap też jest losowaniem.
+- **Dodać do raportu nową metrykę** (np. dokładność dla każdej minuty
+  nagrania albo dla każdego rodzaju oświetlenia) i policzyć dla niej
+  przedział ufności. Zastanówcie się, czy metoda Wilsona ma tu sens.
+- **Porównać przedziały zamiast średnich:** przygotować tabelę, w której
+  dla każdej pary metod sprawdzacie, czy ich przedziały accuracy zachodzą
+  na siebie. Wnioski zapisać słowami „nie widać różnicy” albo „różnica
+  większa niż niepewność pomiaru”.
 
 ## Ekran z kawałami sterowany gestem (`05_ekran_z_kawalami.py`)
 

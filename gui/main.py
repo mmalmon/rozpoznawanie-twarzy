@@ -87,6 +87,7 @@ def main() -> None:
     menedzer = getattr(aplikacja, "menedzer_treningu", None)
     menedzer_ewaluacji = getattr(aplikacja, "menedzer_ewaluacji", None)
     menedzer_eksperymentow = getattr(aplikacja, "menedzer_eksperymentow", None)
+    menedzer_testu_trudnego = getattr(aplikacja, "menedzer_testu_trudnego", None)
     port = _wolny_port()
     serwer = make_server("127.0.0.1", port, aplikacja, threaded=True)
     watek_serwera = threading.Thread(
@@ -124,6 +125,8 @@ def main() -> None:
             menedzer_ewaluacji.zatrzymaj()
         if menedzer_eksperymentow is not None:
             menedzer_eksperymentow.zatrzymaj()
+        if menedzer_testu_trudnego is not None:
+            menedzer_testu_trudnego.zatrzymaj()
         serwer.shutdown()
 
     okno.events.closed += _posprzataj
