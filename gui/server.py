@@ -41,12 +41,22 @@ Endpointy:
   POST /api/eksperymenty/stop        przerwij eksperymenty
   GET  /api/eksperymenty/raport      ostatni raport JSON
   GET  /api/eksperymenty/wykres/<n>  wykres PNG z models/eksperymenty/wykresy
+
+  GET  /api/rejestr/status           stan rejestru obecności
+  GET  /api/rejestr/dzien            frekwencja dnia (?data=RRRR-MM-DD)
+  GET  /api/rejestr/ostatnie         ostatnie rozpoznania (?limit=30)
+  POST /api/rejestr/wlacz           włącz/wyłącz zapis rozpoznań
+  POST /api/rejestr/dopisz          ręcznie dopisz obecność
+  POST /api/rejestr/usun-dzien      usuń wpisy dnia
+  POST /api/rejestr/wyczysc         usuń cały rejestr
+  GET  /api/rejestr/eksport         CSV z frekwencją dnia (?data=...)
 """
 
 from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
@@ -60,6 +70,7 @@ from common.dane_osob import (
     poprawna_nazwa,
     usun_dane_osoby,
 )
+from common.rejestr import RejestrObecnosci, poprawna_data
 from gui.camera_stream import (
     TRYB_DETEKCJA,
     TRYB_ROZPOZNAWANIE,
@@ -160,6 +171,7 @@ def _opis_bazy() -> dict:
 def utworz_aplikacje(
     strumien: StrumienKamery,
     silnik: SilnikRozpoznawania,
+    rejestr: RejestrObecnosci | None = None,
 ) -> Flask:
     """Tworzy aplikację Flask z endpointami panelu."""
     aplikacja = Flask(
@@ -170,6 +182,12 @@ def utworz_aplikacje(
     # Polskie znaki mają trafiać do JSON-a bez escapowania \uXXXX.
     aplikacja.json.ensure_ascii = False
     aplikacja.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+    # Rejestr obecności jest lokalny (SQLite) i nie wymaga modelu.
+    if rejestr is None:
+        rejestr = RejestrObecnosci()
+    aplikacja.rejestr = rejestr  # type: ignore[attr-defined]
+    strumien.ustaw_rejestr(rejestr)
 
     def _po_treningu(sukces: bool) -> None:
         """Po udanym treningu przeładowujemy wzorce bez restartu panelu."""
@@ -599,6 +617,122 @@ def utworz_aplikacje(
         if sciezka is None:
             return jsonify({"ok": False, "komunikat": "Nie ma takiego wykresu."}), 404
         return send_file(sciezka, max_age=0)
+
+    # -------------------------------------------------------------- rejestr
+    def _blad_rejestru(blad: Exception):
+        """Wspólny format błędu dla endpointów rejestru."""
+        if isinstance(blad, ValueError):
+            return jsonify({"ok": False, "komunikat": str(blad)}), 400
+        return jsonify({"ok": False, "komunikat": f"Błąd rejestru: {blad}"}), 500
+
+    @aplikacja.get("/api/rejestr/status")
+    def rejestr_status():
+        return jsonify(rejestr.status())
+
+    @aplikacja.get("/api/rejestr/dzien")
+    def rejestr_dzien():
+        try:
+            return jsonify(rejestr.dzien(request.args.get("data")))
+        except (ValueError, OSError, sqlite3.Error) as blad:
+            return _blad_rejestru(blad)
+
+    @aplikacja.get("/api/rejestr/ostatnie")
+    def rejestr_ostatnie():
+        try:
+            limit = int(request.args.get("limit", 30))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "komunikat": "Limit musi być liczbą."}), 400
+        try:
+            return jsonify({"wpisy": rejestr.ostatnie(limit)})
+        except (OSError, sqlite3.Error) as blad:
+            return _blad_rejestru(blad)
+
+    @aplikacja.post("/api/rejestr/wlacz")
+    def rejestr_wlacz():
+        dane = request.get_json(silent=True) or {}
+        if "wlaczone" not in dane:
+            return jsonify({"ok": False, "komunikat": "Podaj pole 'wlaczone'."}), 400
+        try:
+            stan = rejestr.ustaw_wlaczony(bool(dane.get("wlaczone")))
+        except (OSError, sqlite3.Error) as blad:
+            return _blad_rejestru(blad)
+        return jsonify({"ok": True, "wlaczony": stan, "status": rejestr.status()})
+
+    @aplikacja.post("/api/rejestr/dopisz")
+    def rejestr_dopisz():
+        dane = request.get_json(silent=True) or {}
+        osoba = str(dane.get("osoba", "")).strip()
+        if not osoba or not poprawna_nazwa(osoba):
+            return jsonify({"ok": False, "komunikat": "Niepoprawna nazwa osoby."}), 400
+        try:
+            wpis = rejestr.dopisz(osoba, dane.get("data"))
+        except (ValueError, OSError, sqlite3.Error) as blad:
+            return _blad_rejestru(blad)
+        return jsonify({"ok": True, "wpis": wpis, "status": rejestr.status()})
+
+    @aplikacja.post("/api/rejestr/usun-dzien")
+    def rejestr_usun_dzien():
+        dane = request.get_json(silent=True) or {}
+        data = str(dane.get("data", "")).strip()
+        if not data:
+            return jsonify({"ok": False, "komunikat": "Podaj datę."}), 400
+        if dane.get("potwierdzenie") != data:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "komunikat": "Brak potwierdzenia - wpisz datę, aby usunąć wpisy.",
+                    }
+                ),
+                400,
+            )
+        try:
+            liczba = rejestr.usun_dzien(data)
+        except (ValueError, OSError, sqlite3.Error) as blad:
+            return _blad_rejestru(blad)
+        return jsonify(
+            {"ok": True, "usunieto": liczba, "status": rejestr.status()}
+        )
+
+    @aplikacja.post("/api/rejestr/wyczysc")
+    def rejestr_wyczysc():
+        dane = request.get_json(silent=True) or {}
+        if dane.get("potwierdzenie") != "WYCZYSC":
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "komunikat": "Brak potwierdzenia - wpisz WYCZYSC, aby usunąć cały rejestr.",
+                    }
+                ),
+                400,
+            )
+        try:
+            liczba = rejestr.wyczysc()
+        except (OSError, sqlite3.Error) as blad:
+            return _blad_rejestru(blad)
+        return jsonify(
+            {"ok": True, "usunieto": liczba, "status": rejestr.status()}
+        )
+
+    @aplikacja.get("/api/rejestr/eksport")
+    def rejestr_eksport():
+        try:
+            data = poprawna_data(request.args.get("data"))
+            if data is None:
+                raise ValueError("Data musi mieć format RRRR-MM-DD.")
+            tresc = rejestr.eksport_csv(data)
+        except (ValueError, OSError, sqlite3.Error) as blad:
+            return _blad_rejestru(blad)
+        return Response(
+            tresc,
+            content_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="frekwencja_{data}.csv"'
+                )
+            },
+        )
 
     # ---------------------------------------------------------------- baza
     @aplikacja.get("/api/baza")

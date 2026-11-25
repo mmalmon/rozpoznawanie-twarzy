@@ -5,6 +5,8 @@ data/raw_test/*
 !data/raw_test/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+data/rejestr/*
+!data/rejestr/.gitkeep
 models/*
 !models/.gitkeep
 

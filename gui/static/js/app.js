@@ -124,6 +124,29 @@
     listaOsob: document.getElementById('listaOsob'),
     infoModeluBazy: document.getElementById('infoModeluBazy'),
 
+    viewFrekwencja: document.getElementById('viewFrekwencja'),
+    badgeFrekwencji: document.getElementById('badgeFrekwencji'),
+    infoRejestru: document.getElementById('infoRejestru'),
+    dataFrekwencji: document.getElementById('dataFrekwencji'),
+    btnOdswiezFrekwencje: document.getElementById('btnOdswiezFrekwencje'),
+    btnEksportFrekwencji: document.getElementById('btnEksportFrekwencji'),
+    przelacznikRejestru: document.getElementById('przelacznikRejestru'),
+    ostrzezenieRejestru: document.getElementById('ostrzezenieRejestru'),
+    statObecni: document.getElementById('statObecni'),
+    statNieobecni: document.getElementById('statNieobecni'),
+    statRozpoznan: document.getElementById('statRozpoznan'),
+    statWpisow: document.getElementById('statWpisow'),
+    tabelaObecnych: document.getElementById('tabelaObecnych'),
+    listaNieobecnych: document.getElementById('listaNieobecnych'),
+    osobaDopisz: document.getElementById('osobaDopisz'),
+    btnDopiszObecnosc: document.getElementById('btnDopiszObecnosc'),
+    tabelaOstatnich: document.getElementById('tabelaOstatnich'),
+    poleUsunDzien: document.getElementById('poleUsunDzien'),
+    btnUsunDzien: document.getElementById('btnUsunDzien'),
+    poleWyczysc: document.getElementById('poleWyczysc'),
+    btnWyczyscRejestr: document.getElementById('btnWyczyscRejestr'),
+    retencjaInfo: document.getElementById('retencjaInfo'),
+
     viewInfo: document.getElementById('viewInfo'),
 
     modalKamery: document.getElementById('modalKamery'),
@@ -191,6 +214,11 @@
     baza: {
       tytul: 'Baza twarzy',
       podtytul: 'Podgląd i usuwanie zapisanych osób',
+      kamera: false,
+    },
+    frekwencja: {
+      tytul: 'Frekwencja',
+      podtytul: 'Rejestr rozpoznań, obecność dnia i eksport CSV',
       kamera: false,
     },
     info: {
@@ -296,6 +324,7 @@
     raportTestuTrudnego: null,
     czasRaportuTestTrudny: null,
     ostatnieWyniki: '',
+    rejestr: null,
   };
 
   // ------------------------------------------------------------- pomocnicze
@@ -474,6 +503,7 @@
     el.viewEksperymenty.classList.toggle('d-none', nazwa !== 'eksperymenty');
     el.viewTestTrudny.classList.toggle('d-none', nazwa !== 'test-trudny');
     el.viewBaza.classList.toggle('d-none', nazwa !== 'baza');
+    el.viewFrekwencja.classList.toggle('d-none', nazwa !== 'frekwencja');
     el.viewInfo.classList.toggle('d-none', nazwa !== 'info');
 
     document.querySelectorAll('.panel-widoku').forEach((panel) => {
@@ -504,6 +534,8 @@
       await odswiezRaportTestuTrudnego();
     } else if (nazwa === 'baza') {
       await odswiezBaze();
+    } else if (nazwa === 'frekwencja') {
+      await odswiezFrekwencje();
     }
 
     zastosujStatus(stan.status || {});
@@ -1758,6 +1790,238 @@
     }
   }
 
+  // ----------------------------------------------------------- frekwencja
+  const dzisiejszaData = () => {
+    const teraz = new Date();
+    const miesiac = String(teraz.getMonth() + 1).padStart(2, '0');
+    const dzien = String(teraz.getDate()).padStart(2, '0');
+    return `${teraz.getFullYear()}-${miesiac}-${dzien}`;
+  };
+
+  // Czas w bazie jest zapisany jako ISO, np. "2026-11-25T08:15:00".
+  const godzina = (czas) =>
+    typeof czas === 'string' && czas.length >= 19 ? czas.slice(11, 19) : '—';
+
+  function renderRejestrStatus(dane) {
+    stan.rejestr = dane;
+    el.przelacznikRejestru.checked = Boolean(dane.wlaczony);
+    el.statWpisow.textContent = String(dane.liczba_wpisow ?? 0);
+    el.retencjaInfo.textContent = String(dane.retencja_dni ?? 90);
+
+    const czesci = [];
+    if (dane.plik) {
+      czesci.push(`Baza: ${dane.plik}`);
+    }
+    if (dane.odstep_s) {
+      czesci.push(`Zapis najwyżej co ${Math.round(dane.odstep_s / 60)} min`);
+    }
+    el.infoRejestru.textContent = czesci.join(' · ');
+
+    if (dane.blad) {
+      el.ostrzezenieRejestru.textContent = dane.blad;
+      el.ostrzezenieRejestru.classList.remove('d-none');
+    } else {
+      el.ostrzezenieRejestru.classList.add('d-none');
+    }
+  }
+
+  function renderDzienFrekwencji(dane) {
+    const obecni = dane.obecni || [];
+    const nieobecni = dane.nieobecni || [];
+    const osoby = dane.osoby || [];
+
+    el.statObecni.textContent = String(obecni.length);
+    el.statNieobecni.textContent = String(nieobecni.length);
+    el.statRozpoznan.textContent = String(dane.liczba_rozpoznan ?? 0);
+    el.badgeFrekwencji.textContent = `${obecni.length}/${osoby.length}`;
+    el.dataFrekwencji.value = dane.data || el.dataFrekwencji.value || dzisiejszaData();
+
+    el.tabelaObecnych.innerHTML = obecni.length
+      ? obecni
+          .map(
+            (wpis) =>
+              '<tr>' +
+              `<td class="ps-3">${escapeHtml(wpis.osoba)}</td>` +
+              `<td>${godzina(wpis.pierwsze)}</td>` +
+              `<td>${godzina(wpis.ostatnie)}</td>` +
+              `<td class="text-end pe-3">${wpis.liczba}</td>` +
+              '</tr>'
+          )
+          .join('')
+      : '<tr><td colspan="4" class="text-muted small ps-3">Brak rozpoznań tego dnia.</td></tr>';
+
+    el.listaNieobecnych.innerHTML = nieobecni.length
+      ? nieobecni
+          .map(
+            (osoba) =>
+              `<span class="badge text-bg-light border me-1 mb-1">${escapeHtml(osoba)}</span>`
+          )
+          .join('')
+      : '<span class="text-muted">Brak listy osób — dodaj twarze i wytrenuj model.</span>';
+
+    // Zachowujemy wybór użytkownika, bo lista jest przebudowywana przy
+    // każdym odświeżeniu (co kilka sekund).
+    const wybrana = el.osobaDopisz.value;
+    el.osobaDopisz.innerHTML =
+      '<option value="">Wybierz osobę…</option>' +
+      osoby
+        .map(
+          (osoba) =>
+            `<option value="${escapeHtml(osoba)}">${escapeHtml(osoba)}</option>`
+        )
+        .join('');
+    if (osoby.includes(wybrana)) {
+      el.osobaDopisz.value = wybrana;
+    }
+  }
+
+  function renderOstatnieRejestru(wpisy) {
+    el.tabelaOstatnich.innerHTML = wpisy.length
+      ? wpisy
+          .map((wpis) => {
+            const podobienstwo =
+              wpis.podobienstwo === null || wpis.podobienstwo === undefined
+                ? '—'
+                : `${formatuj(wpis.podobienstwo * 100)}%`;
+            const zrodlo = wpis.zrodlo === 'recznie' ? 'ręcznie' : 'kamera';
+            return (
+              '<tr>' +
+              `<td class="ps-3 text-nowrap">${escapeHtml(godzina(wpis.czas))}</td>` +
+              `<td>${escapeHtml(wpis.osoba)}</td>` +
+              `<td class="small text-muted">${zrodlo}</td>` +
+              `<td class="text-end pe-3">${podobienstwo}</td>` +
+              '</tr>'
+            );
+          })
+          .join('')
+      : '<tr><td colspan="4" class="text-muted small ps-3">Brak wpisów.</td></tr>';
+  }
+
+  async function odswiezFrekwencje() {
+    const data = el.dataFrekwencji.value || dzisiejszaData();
+    try {
+      const [status, dzien, ostatnie] = await Promise.all([
+        pobierz('/api/rejestr/status'),
+        pobierz(`/api/rejestr/dzien?data=${encodeURIComponent(data)}`),
+        pobierz('/api/rejestr/ostatnie?limit=20'),
+      ]);
+      renderRejestrStatus(status);
+      renderDzienFrekwencji(dzien);
+      renderOstatnieRejestru(ostatnie.wpisy || []);
+    } catch (blad) {
+      pokazBlad(blad.message);
+    }
+  }
+
+  async function przelaczRejestr() {
+    const wlaczone = el.przelacznikRejestru.checked;
+    try {
+      const dane = await wyslij('/api/rejestr/wlacz', { wlaczone });
+      renderRejestrStatus(dane.status || {});
+      pokazInfo(
+        wlaczone
+          ? 'Rejestr włączony — rozpoznania będą zapisywane.'
+          : 'Rejestr wyłączony — nowe rozpoznania nie będą zapisywane.'
+      );
+    } catch (blad) {
+      el.przelacznikRejestru.checked = !wlaczone;
+      pokazBlad(blad.message);
+    }
+  }
+
+  async function dopiszObecnosc() {
+    const osoba = el.osobaDopisz.value;
+    const data = el.dataFrekwencji.value || dzisiejszaData();
+    if (!osoba) {
+      pokazBlad('Wybierz osobę do dopisania.');
+      return;
+    }
+    el.btnDopiszObecnosc.disabled = true;
+    try {
+      await wyslij('/api/rejestr/dopisz', { osoba, data });
+      pokazInfo(`Dopisano obecność: ${osoba}.`);
+      await odswiezFrekwencje();
+    } catch (blad) {
+      pokazBlad(blad.message);
+    } finally {
+      el.btnDopiszObecnosc.disabled = false;
+    }
+  }
+
+  async function eksportujFrekwencje() {
+    const data = el.dataFrekwencji.value || dzisiejszaData();
+    try {
+      const odpowiedz = await fetch(
+        `/api/rejestr/eksport?data=${encodeURIComponent(data)}`,
+        { cache: 'no-store' }
+      );
+      if (!odpowiedz.ok) {
+        let komunikat = 'Nie udało się wyeksportować CSV.';
+        try {
+          const dane = await odpowiedz.json();
+          komunikat = dane.komunikat || komunikat;
+        } catch (_) {
+          /* odpowiedź mogła nie mieć JSON-a */
+        }
+        throw new Error(komunikat);
+      }
+      // Pobieramy plik jako blob, żeby pywebview nie opuszczał panelu.
+      const blob = await odpowiedz.blob();
+      const adres = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = adres;
+      link.download = `frekwencja_${data}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(adres);
+      pokazInfo(`Eksport CSV: frekwencja_${data}.csv`);
+    } catch (blad) {
+      pokazBlad(blad.message);
+    }
+  }
+
+  async function usunDzienRejestru() {
+    const data = el.poleUsunDzien.value.trim();
+    if (!data) {
+      pokazBlad('Wpisz datę, aby potwierdzić usunięcie.');
+      return;
+    }
+    el.btnUsunDzien.disabled = true;
+    try {
+      const dane = await wyslij('/api/rejestr/usun-dzien', {
+        data,
+        potwierdzenie: data,
+      });
+      pokazInfo(`Usunięto wpisów z dnia ${data}: ${dane.usunieto}.`);
+      el.poleUsunDzien.value = '';
+      await odswiezFrekwencje();
+    } catch (blad) {
+      pokazBlad(blad.message);
+    } finally {
+      el.btnUsunDzien.disabled = false;
+    }
+  }
+
+  async function wyczyscRejestr() {
+    const potwierdzenie = el.poleWyczysc.value.trim();
+    if (potwierdzenie !== 'WYCZYSC') {
+      pokazBlad('Wpisz WYCZYSC, aby potwierdzić wyczyszczenie rejestru.');
+      return;
+    }
+    el.btnWyczyscRejestr.disabled = true;
+    try {
+      const dane = await wyslij('/api/rejestr/wyczysc', { potwierdzenie });
+      pokazInfo(`Wyczyszczono rejestr. Usunięto wpisów: ${dane.usunieto}.`);
+      el.poleWyczysc.value = '';
+      await odswiezFrekwencje();
+    } catch (blad) {
+      pokazBlad(blad.message);
+    } finally {
+      el.btnWyczyscRejestr.disabled = false;
+    }
+  }
+
   // ----------------------------------------------------------------- baza
   function renderBaza(dane) {
     const osoby = dane.osoby || [];
@@ -1941,6 +2205,15 @@
     el.btnOdswiezBaze.addEventListener('click', odswiezBaze);
     el.btnPotwierdzUsun.addEventListener('click', potwierdzUsuniecie);
 
+    el.dataFrekwencji.value = dzisiejszaData();
+    el.btnOdswiezFrekwencje.addEventListener('click', odswiezFrekwencje);
+    el.dataFrekwencji.addEventListener('change', odswiezFrekwencje);
+    el.btnEksportFrekwencji.addEventListener('click', eksportujFrekwencje);
+    el.przelacznikRejestru.addEventListener('change', przelaczRejestr);
+    el.btnDopiszObecnosc.addEventListener('click', dopiszObecnosc);
+    el.btnUsunDzien.addEventListener('click', usunDzienRejestru);
+    el.btnWyczyscRejestr.addEventListener('click', wyczyscRejestr);
+
     document.querySelectorAll('.nav-link[data-view]').forEach((przycisk) => {
       przycisk.addEventListener('click', () => {
         przelaczWidok(przycisk.dataset.view);
@@ -2034,6 +2307,14 @@
         odswiezTestTrudny();
       }
     }, 1000);
+
+    // Frekwencja: odświeżamy rzadziej — wpisy zmieniają się co najwyżej
+    // raz na kilka minut (cooldown), a każde odświeżenie czyta bazę.
+    setInterval(() => {
+      if (stan.widok === 'frekwencja') {
+        odswiezFrekwencje();
+      }
+    }, 5000);
   }
 
   init();

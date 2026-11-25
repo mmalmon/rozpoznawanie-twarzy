@@ -51,6 +51,7 @@ Panel prowadzi cały proces — nie trzeba już przełączać się do konsoli:
 | **Eksperymenty** | Uruchamia `08_eksperymenty.py --postep` w osobnym procesie. Pokazuje wpływ liczby zdjęć, jasności, `k` w k-NN i progu decyzyjnego: tabelę wyników (z kolumną CI accuracy), cztery wykresy i automatyczne wnioski. |
 | **Test trudny** | Uruchamia `09_test_trudny.py --postep --folder data/raw_test`. Pokazuje wynik na zdjęciach z innych warunków, porównanie z łatwym testem z `07`, metryki na osobę, CI i wykresy. |
 | **Baza twarzy** | Miniatury, liczba zdjęć, usuwanie osoby (opcjonalnie z ponownym treningiem). |
+| **Frekwencja** | Rejestr rozpoznań w SQLite (`data/rejestr/rejestr.db`): obecni i nieobecni wybranego dnia, pierwsze/ostatnie pojawienie się, liczba rozpoznań, ostatnie wpisy, ręczne dopisywanie obecności, eksport CSV, przełącznik zapisu oraz czyszczenie dnia/całego rejestru. |
 | **O projekcie** | Krótka instrukcja i uwagi o prywatności / AI Act. |
 
 Dodatkowo:
@@ -75,6 +76,7 @@ gui/test_trudny.py     subprocess 09, walidacja data/raw_test, log i przerwanie
 gui/templates/         index.html (jeden widok, przełączane zakładki)
 gui/static/            Bootstrap 5 (lokalnie) + app.css + app.js
 common/rozpoznawanie.py wspólna logika dopasowania używana też przez 04
+common/rejestr.py      rejestr obecności w SQLite (zapis, frekwencja, CSV, retencja)
 ```
 
 - Klatki nie przechodzą przez mostek JS↔Python — serwer wystawia je jako
@@ -135,6 +137,15 @@ GET  /api/test-trudny/wykres/<n>   wykres PNG z models/test_trudny/wykresy
 GET  /api/baza                  osoby, liczba zdjęć, informacje o modelu
 GET  /api/baza/<osoba>/zdjecie  przykładowe zdjęcie osoby
 POST /api/baza/usun             usuń osobę (wymaga potwierdzenia nazwą)
+
+GET  /api/rejestr/status        stan rejestru (plik, liczba wpisów, retencja)
+GET  /api/rejestr/dzien         frekwencja dnia (?data=RRRR-MM-DD)
+GET  /api/rejestr/ostatnie      ostatnie rozpoznania (?limit=30)
+POST /api/rejestr/wlacz         włącz/wyłącz zapis rozpoznań
+POST /api/rejestr/dopisz        ręcznie dopisz obecność (osoba, data)
+POST /api/rejestr/usun-dzien    usuń wpisy dnia (wymaga potwierdzenia datą)
+POST /api/rejestr/wyczysc       usuń cały rejestr (wymaga wpisania WYCZYSC)
+GET  /api/rejestr/eksport       CSV z frekwencją dnia (?data=...)
 ```
 
 ## Trening i pasek postępu
@@ -270,6 +281,34 @@ Zdjęcia do testu trudnego zbierzesz w zakładce **Dodaj twarz**: przełącznik
 **Zapisz jako test trudny** zmienia folder docelowy na `data/raw_test`.
 Nie mieszaj ich z `data/raw` — po zmieszaniu trafiłyby do treningu i test
 przestałby być uczciwy.
+
+## Frekwencja i prywatność
+
+Zakładka **Frekwencja** czyta i zapisuje lokalną bazę SQLite
+`data/rejestr/rejestr.db`. Kamera dopisuje rozpoznania **tylko w trybie
+rozpoznawania** i tylko dla osób znanych modelowi — „Nieznana osoba” nigdy
+nie trafia do rejestru. Ta sama osoba jest zapisywana najwyżej raz na
+5 minut (`ODSTEP_ZAPISU_S` w `common/rejestr.py`), więc baza nie rośnie od
+kilku klatek na sekundę.
+
+Co zawiera wpis: osoba, czas, data, podobieństwo, numer kamery i źródło
+(`kamera` / `recznie`). **Nie ma tam zdjęć, embeddingów ani emocji.**
+
+Panel pozwala:
+
+- wybrać dzień i zobaczyć obecnych (pierwsze/ostatnie pojawienie się, liczba
+  rozpoznań) oraz nieobecnych (osoby z `models/wzorce_osob.json`),
+- dopisać obecność ręcznie, gdy model kogoś nie rozpoznał,
+- wyłączyć zapis przełącznikiem (ustawienie jest trwałe),
+- wyeksportować CSV (średnik + BOM — gotowe dla Excela),
+- usunąć wpisy dnia albo cały rejestr; operacje wymagają potwierdzenia
+  (data lub słowo `WYCZYSC`).
+
+Wpisy starsze niż **90 dni** są usuwane automatycznie przy starcie i przy
+zapisie. Baza jest w `.gitignore` i nie opuszcza komputera. Eksport CSV też
+zawiera dane osobowe — traktuj go jak każdy inny dokument z listą uczniów.
+
+Ten sam rejestr obsługuje konsola: `python 10_rejestr_obecnosci.py --help`.
 
 ## Pliki Bootstrapa
 

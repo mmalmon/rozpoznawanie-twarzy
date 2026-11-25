@@ -35,6 +35,7 @@ from common.dane_osob import (
 )
 from common.face_detector import DetektorTwarzy, WykrytaTwarz
 from common.imgio import zapisz_obraz
+from common.rejestr import ZRODLO_KAMERA, RejestrObecnosci
 from common.rozpoznawanie import NAZWA_NIEZNANEJ
 from gui.rozpoznawanie import SilnikRozpoznawania
 
@@ -78,11 +79,18 @@ class StrumienKamery:
     Flask obsługuje żądania w kilku wątkach naraz.
     """
 
-    def __init__(self, silnik: SilnikRozpoznawania | None = None) -> None:
+    def __init__(
+        self,
+        silnik: SilnikRozpoznawania | None = None,
+        rejestr: RejestrObecnosci | None = None,
+    ) -> None:
         self._zamek = threading.Lock()
         self._stop = threading.Event()
         self._watek: threading.Thread | None = None
         self._silnik = silnik
+        # Rejestr obecności jest opcjonalny: testy mogą go nie podawać.
+        self._rejestr = rejestr
+        self._blad_rejestru: str | None = None
 
         self._klatka: bytes | None = None
         self._licznik_klatek = 0
@@ -389,6 +397,42 @@ class StrumienKamery:
             self._czas_wynikow = time.monotonic()
             self._twarze = len(wyniki)
             self._analiza_w_toku = False
+            tryb = self._tryb
+            kamera = self._indeks_kamery
+            rejestr = self._rejestr
+
+        # Rejestr prowadzimy TYLKO w trybie rozpoznawania: w detekcji nie znamy
+        # nazwisk, a przy zbieraniu zdjęć nie chcemy zaśmiecać frekwencji.
+        if tryb == TRYB_ROZPOZNAWANIE and rejestr is not None:
+            self._zapisz_do_rejestru(wyniki, kamera, rejestr)
+
+    def _zapisz_do_rejestru(
+        self, wyniki: list[dict], kamera: int, rejestr: RejestrObecnosci
+    ) -> None:
+        """Dopisuje rozpoznane osoby do rejestru obecności.
+
+        Rejestr zapisuje najwyżej jedno rozpoznanie osoby na 5 minut, więc
+        wołanie tej metody przy każdej klatce jest tanie. Błąd zapisu (np.
+        zablokowany plik bazy) trafia do statusu i NIE przerywa rozpoznawania.
+        """
+        for wynik in wyniki:
+            osoba = str(wynik.get("osoba") or "")
+            if not osoba or osoba == NAZWA_NIEZNANEJ:
+                continue
+            try:
+                rejestr.zapisz(
+                    osoba,
+                    wynik.get("podobienstwo"),
+                    kamera=kamera,
+                    zrodlo=ZRODLO_KAMERA,
+                )
+            except Exception as blad:  # noqa: BLE001 - rejestr nie może zabić kamery
+                with self._zamek:
+                    self._blad_rejestru = f"Nie udało się zapisać do rejestru: {blad}"
+                return
+
+        with self._zamek:
+            self._blad_rejestru = None
 
     def _obsluz_zbieranie(self, klatka) -> None:
         """Wykrywa twarze i cyklicznie zapisuje największą z nich."""
@@ -495,6 +539,12 @@ class StrumienKamery:
         with self._zamek:
             self._emocje = bool(wlaczone)
 
+    def ustaw_rejestr(self, rejestr: RejestrObecnosci | None) -> None:
+        """Podłącza albo odpina rejestr obecności używany przy rozpoznawaniu."""
+        with self._zamek:
+            self._rejestr = rejestr
+            self._blad_rejestru = None
+
     def stop(self) -> None:
         """Zatrzymuje wątek kamery i zwalnia urządzenie."""
         self._stop.set()
@@ -551,6 +601,11 @@ class StrumienKamery:
                 "cel": self._cel,
                 "zapisane": self._zapisane,
                 "test_trudny": self._folder_zapisu == FOLDER_RAW_TEST,
+                "rejestr": self._rejestr is not None,
+                "rejestr_wlaczony": bool(
+                    self._rejestr is not None and self._rejestr.wlaczony
+                ),
+                "rejestr_blad": self._blad_rejestru,
                 "wyniki": list(self._wyniki),
                 "wyniki_aktualne": bool(self._wyniki)
                 and (teraz - self._czas_wynikow <= WAZNOSC_WYNIKOW),

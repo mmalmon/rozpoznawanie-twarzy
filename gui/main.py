@@ -47,6 +47,7 @@ except ImportError as blad:  # pragma: no cover - zależne od środowiska
         "    python gui/tkinter_app.py"
     ) from blad
 
+from common.rejestr import RejestrObecnosci
 from gui.camera_stream import StrumienKamery
 from gui.rozpoznawanie import SilnikRozpoznawania
 from gui.server import utworz_aplikacje
@@ -79,11 +80,15 @@ def _czekaj_na_serwer(adres: str, limit: float = 10.0) -> None:
 def main() -> None:
     silnik = SilnikRozpoznawania()
     strumien = StrumienKamery(silnik)
+    # Rejestr obecności to lokalna baza SQLite (data/rejestr/rejestr.db).
+    # Tworzymy go PRZED serwerem, żeby endpointy i kamera używały tej samej
+    # instancji (jeden zamek i jeden cooldown na osobę).
+    rejestr = RejestrObecnosci()
     # Skanowanie kamer trwa kilka sekund - robimy je od razu w tle,
     # żeby panel po otwarciu miał już gotową listę.
     strumien.odswiez_kamery_w_tle()
 
-    aplikacja = utworz_aplikacje(strumien, silnik)
+    aplikacja = utworz_aplikacje(strumien, silnik, rejestr)
     menedzer = getattr(aplikacja, "menedzer_treningu", None)
     menedzer_ewaluacji = getattr(aplikacja, "menedzer_ewaluacji", None)
     menedzer_eksperymentow = getattr(aplikacja, "menedzer_eksperymentow", None)

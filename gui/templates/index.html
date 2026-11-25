@@ -75,6 +75,14 @@
         Baza twarzy
       </button>
 
+      <span class="sidebar-heading">Frekwencja</span>
+      <button class="nav-link" type="button" data-view="frekwencja">
+        <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M3 11h18"/><path d="m9 16 2 2 4-4"/>
+        </svg>
+        Frekwencja
+      </button>
+
       <span class="sidebar-heading">Pomoc</span>
       <button class="nav-link" type="button" data-view="info">
         <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -882,6 +890,187 @@
         <div class="card app-card">
           <div class="card-header">Informacje o modelu</div>
           <div class="card-body small" id="infoModeluBazy">—</div>
+        </div>
+      </div>
+
+      <!-- ====================================================== frekwencja -->
+      <div class="row g-3 d-none" id="viewFrekwencja">
+        <div class="col-12">
+          <div class="card app-card">
+            <div class="card-header d-flex flex-wrap align-items-center gap-2">
+              Rejestr obecności
+              <span class="badge text-bg-light border" id="badgeFrekwencji">0</span>
+              <span class="small text-muted ms-2" id="infoRejestru">Wczytywanie…</span>
+            </div>
+            <div class="card-body">
+              <div class="row g-3 align-items-end">
+                <div class="col-sm-4 col-lg-3">
+                  <label class="form-label small text-muted" for="dataFrekwencji">Dzień</label>
+                  <input class="form-control" type="date" id="dataFrekwencji">
+                </div>
+                <div class="col-sm-auto">
+                  <button class="btn btn-primary" id="btnOdswiezFrekwencje" type="button">Pokaż dzień</button>
+                </div>
+                <div class="col-sm-auto">
+                  <button class="btn btn-outline-secondary" id="btnEksportFrekwencji" type="button">Eksport CSV</button>
+                </div>
+                <div class="col-sm-auto ms-sm-auto">
+                  <div class="form-check form-switch mb-0">
+                    <input class="form-check-input" type="checkbox" role="switch" id="przelacznikRejestru">
+                    <label class="form-check-label small" for="przelacznikRejestru">Zapisuj rozpoznania</label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="alert alert-warning small mt-3 mb-0 d-none" id="ostrzezenieRejestru" role="alert"></div>
+
+              <div class="row g-3 mt-1">
+                <div class="col-6 col-lg-3">
+                  <div class="card app-card h-100">
+                    <div class="card-body">
+                      <div class="text-muted small">Obecni</div>
+                      <div class="fs-3 fw-semibold" id="statObecni">0</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-6 col-lg-3">
+                  <div class="card app-card h-100">
+                    <div class="card-body">
+                      <div class="text-muted small">Nieobecni</div>
+                      <div class="fs-3 fw-semibold" id="statNieobecni">0</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-6 col-lg-3">
+                  <div class="card app-card h-100">
+                    <div class="card-body">
+                      <div class="text-muted small">Rozpoznania dnia</div>
+                      <div class="fs-3 fw-semibold" id="statRozpoznan">0</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-6 col-lg-3">
+                  <div class="card app-card h-100">
+                    <div class="card-body">
+                      <div class="text-muted small">Wpisów w bazie</div>
+                      <div class="fs-3 fw-semibold" id="statWpisow">0</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-8">
+          <div class="card app-card h-100">
+            <div class="card-header">Obecni w wybranym dniu</div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th class="ps-3">Osoba</th>
+                      <th>Pierwsze</th>
+                      <th>Ostatnie</th>
+                      <th class="text-end pe-3">Rozpoznań</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tabelaObecnych">
+                    <tr><td colspan="4" class="text-muted small ps-3">Brak rozpoznań tego dnia.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-4">
+          <div class="card app-card h-100">
+            <div class="card-header">Nieobecni</div>
+            <div class="card-body small" id="listaNieobecnych">
+              <span class="text-muted">Brak danych.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-6">
+          <div class="card app-card h-100">
+            <div class="card-header">Dopisz obecność ręcznie</div>
+            <div class="card-body">
+              <p class="small text-muted">
+                Przydatne, gdy model nie rozpoznał ucznia (np. słabe światło).
+                Wpis trafia do wybranego dnia i jest oznaczony jako ręczny.
+              </p>
+              <div class="row g-2 align-items-end">
+                <div class="col-sm-7">
+                  <label class="form-label small text-muted" for="osobaDopisz">Osoba</label>
+                  <select class="form-select" id="osobaDopisz">
+                    <option value="">Wybierz osobę…</option>
+                  </select>
+                </div>
+                <div class="col-sm-auto">
+                  <button class="btn btn-outline-primary" id="btnDopiszObecnosc" type="button">Dopisz</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-6">
+          <div class="card app-card h-100">
+            <div class="card-header">Ostatnie rozpoznania</div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th class="ps-3">Czas</th>
+                      <th>Osoba</th>
+                      <th>Źródło</th>
+                      <th class="text-end pe-3">Podobieństwo</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tabelaOstatnich">
+                    <tr><td colspan="4" class="text-muted small ps-3">Brak wpisów.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card app-card border-danger-subtle">
+            <div class="card-header text-danger">Porządki i prywatność</div>
+            <div class="card-body">
+              <p class="small text-muted">
+                Rejestr nie zawiera zdjęć ani emocji — tylko nazwę osoby, czas
+                i podobieństwo. Wpisy starsze niż <strong id="retencjaInfo">90</strong> dni
+                są usuwane automatycznie. Usunięcie jest trwałe.
+              </p>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="form-label small text-muted" for="poleUsunDzien">
+                    Usuń wpisy dnia — wpisz datę, aby potwierdzić
+                  </label>
+                  <div class="input-group">
+                    <input class="form-control" id="poleUsunDzien" placeholder="RRRR-MM-DD">
+                    <button class="btn btn-outline-danger" id="btnUsunDzien" type="button">Usuń dzień</button>
+                  </div>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small text-muted" for="poleWyczysc">
+                    Wyczyść cały rejestr — wpisz WYCZYSC, aby potwierdzić
+                  </label>
+                  <div class="input-group">
+                    <input class="form-control" id="poleWyczysc" placeholder="WYCZYSC">
+                    <button class="btn btn-danger" id="btnWyczyscRejestr" type="button">Wyczyść</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

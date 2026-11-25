@@ -24,6 +24,7 @@ w czasie rzeczywistym.
 12. [Krok 6 — eksperymenty](#krok-6--eksperymenty)
 13. [Krok 7 — test trudny](#krok-7--test-trudny)
 14. [Przedziały ufności — jak czytać niepewność wyniku](#przedziały-ufności--jak-czytać-niepewność-wyniku)
+15. [Krok 8 — rejestr rozpoznań i frekwencja](#krok-8--rejestr-rozpoznań-i-frekwencja)
 
 ## Jak to działa (teoria dla uczniów)
 
@@ -132,6 +133,7 @@ rozpoznawanie twarzy/
 ├── 07_ewaluacja.py              # krok 5: metryki, macierz pomyłek, porównanie metod, CI
 ├── 08_eksperymenty.py           # krok 6: wpływ liczby zdjęć, jasności, k w k-NN i progu
 ├── 09_test_trudny.py            # krok 7: osobny, trudny zbiór testowy + CI
+├── 10_rejestr_obecnosci.py      # krok 8: podgląd, eksport i porządki rejestru obecności
 ├── listuj_kamery.py             # pomocniczy: wypisuje dostępne kamery i ich rozdzielczości
 ├── pobierz_zdjecia_nieznajomych.py  # pomocniczy: pobiera zdjecia "obcych" osob do kalibracji progu
 ├── Uruchom panel.bat            # dwuklik: uruchamia panel GUI (szuka Pythona z .venv)
@@ -146,6 +148,7 @@ rozpoznawanie twarzy/
 │   ├── metryki.py               # metryki FAR/FRR/EER/AUC, k-NN, prototypy i przedziały ufności
 │   ├── modele/                  # modele ONNX/task (YuNet, FER+, MediaPipe Pose; poza Git)
 │   ├── model.py                 # definicja modelu (ekstraktor cech / embeddingi)
+│   ├── rejestr.py               # rejestr obecności w SQLite (bez zdjęć i emocji)
 │   ├── rozpoznawanie.py         # wspólna logika: wzorce, dopasowanie, emocje (04 + GUI)
 │   └── uruchom_w_venv.py        # restart skryptu w środowisku .venv
 ├── gui/
@@ -168,7 +171,8 @@ rozpoznawanie twarzy/
 ├── data/
 │   ├── raw/<osoba>/             # surowe zdjęcia z kamery (per osoba)
 │   ├── raw_test/<osoba>/        # zdjęcia do testu trudnego (nie wchodzą do treningu)
-│   └── processed/{train,val,test}/  # dane po podziale, gotowe do treningu i oceny
+│   ├── processed/{train,val,test}/  # dane po podziale, gotowe do treningu i oceny
+│   └── rejestr/rejestr.db       # lokalny rejestr obecności (SQLite, poza Git)
 ├── models/
 │   ├── wzorce_osob.json         # wzorce zdjec tozsamosci + skalibrowane progi
 │   ├── kalibracja_progu.png     # wykres pomagajacy zrozumiec dobor progu
@@ -181,16 +185,17 @@ rozpoznawanie twarzy/
 
 > **Panel GUI** (`gui/main.py`) prowadzi cały proces bez konsoli: zbieranie
 > zdjęć do `data/raw`, trening z paskiem postępu (te same skrypty `02` i
-> `03`), rozpoznawanie wyuczonych osób na żywo, opcjonalne emocje oraz
-> przeglądanie i usuwanie bazy twarzy. Skrypty `01`–`04` nadal działają i
+> `03`), rozpoznawanie wyuczonych osób na żywo, opcjonalne emocje,
+> przeglądanie i usuwanie bazy twarzy oraz rejestr frekwencji z eksportem
+> CSV. Skrypty `01`–`04` nadal działają i
 > uczą dokładnie tego samego pipeline'u — panel jest wygodnym skrótem, a nie
 > osobną implementacją. Gdy WebView2 nie działa, uruchom awaryjne GUI:
 > `python gui/tkinter_app.py`.
 
-Foldery `data/raw`, `data/raw_test`, `data/processed`, `models` oraz
-`common/modele` są celowo puste w repozytorium (`.gitignore`) — zawierają dane
-osobowe (zdjęcia twarzy) i duże pliki binarne, których nie powinno się trzymać
-w Git.
+Foldery `data/raw`, `data/raw_test`, `data/processed`, `data/rejestr`,
+`models` oraz `common/modele` są celowo puste w repozytorium (`.gitignore`) —
+zawierają dane osobowe (zdjęcia twarzy, wpisy obecności) i duże pliki binarne,
+których nie powinno się trzymać w Git.
 
 Pliki modeli pobierz osobno i wgraj do `common/modele/`:
 
@@ -860,6 +865,58 @@ Trzy zasady, które warto zapamiętać:
 3. **Przedział nie opisuje pojedynczej osoby.** To niepewność średniej
    dla całego zbioru, a nie „ten uczeń zostanie rozpoznany w 97%”.
 
+## Krok 8 — rejestr rozpoznań i frekwencja
+
+Model odpowiada na pytanie „kto jest przed kamerą?”. Krok 8 zamienia tę
+odpowiedź w coś użytecznego: **dziennik obecności**. Panel (zakładka
+**Frekwencja**) i skrypt `10_rejestr_obecnosci.py` zapisują rozpoznania do
+lokalnej bazy SQLite `data/rejestr/rejestr.db`.
+
+```powershell
+python 10_rejestr_obecnosci.py
+python 10_rejestr_obecnosci.py --data 2026-11-24
+python 10_rejestr_obecnosci.py --ostatnie 20
+python 10_rejestr_obecnosci.py --eksport frekwencja.csv --data 2026-11-24
+python 10_rejestr_obecnosci.py --wyczysc-dzien 2026-11-24 --tak
+python 10_rejestr_obecnosci.py --wyczysc-wszystko --tak
+```
+
+**Co trafia do rejestru?** Tylko tekst i liczby: nazwa osoby z modelu, czas
+rozpoznania, podobieństwo do wzorca, numer kamery i źródło wpisu (kamera albo
+ręcznie). **Nie zapisujemy zdjęć, embeddingów ani emocji** — im mniej danych
+osobowych, tym mniej ryzyka. Plik bazy jest w `.gitignore`.
+
+**Dlaczego nie każda klatka?** Rozpoznawanie liczy się kilka razy na sekundę.
+Bez ograniczenia baza zapełniłaby się tysiącami identycznych wpisów. Dlatego
+ta sama osoba jest zapisywana najwyżej **raz na 5 minut** (`ODSTEP_ZAPISU_S`
+w `common/rejestr.py`). To wystarcza, żeby zobaczyć pierwsze i ostatnie
+pojawienie się osoby w ciągu dnia.
+
+**Frekwencja dnia** to osoby, które mają co najmniej jedno rozpoznanie w
+wybranym dniu. „Nieobecni” to osoby z `models/wzorce_osob.json`, których w
+tym dniu nie było. Lista pochodzi z modelu, a nie z folderów w `data/` —
+uczniowie z testu trudnego nie są przecież częścią klasy.
+
+**Zasady prywatności i retencji:**
+
+- Zapis można w każdej chwili wyłączyć przełącznikiem w panelu; ustawienie
+  jest trwałe i dotyczy też kolejnych uruchomień.
+- Wpisy starsze niż **90 dni** są usuwane automatycznie przy starcie i przy
+  zapisie (retencję można zmienić w kodzie lub przez `--retencja`).
+- Dzień albo cały rejestr można usunąć z panelu lub z konsoli. Usunięcie jest
+  trwałe — dlatego wymaga potwierdzenia (wpisania daty lub słowa `WYCZYSC`).
+- Rejestr jest lokalny: serwer nasłuchuje tylko na `127.0.0.1`, a baza nie
+  opuszcza komputera.
+- **Eksport CSV** używa średnika i BOM, więc polskie znaki poprawnie otwierają
+  się w Excelu. To wygodny sposób przekazania frekwencji, ale pamiętaj, że
+  eksportowany plik też zawiera dane osobowe.
+
+> **Ćwiczenie z etyki.** Zastanówcie się, czy system obecności oparty na
+> kamerze jest w Waszej szkole w ogóle dopuszczalny. Kto wyraża zgodę? Jak
+> długo wolno trzymać wpisy? Co się stanie, gdy model pomyli dwie osoby?
+> Rejestr pokazuje, że techniczna poprawność to dopiero połowa decyzji —
+> druga połowa to prawo, zgoda i zaufanie.
+
 ## Jak przygotować dobre materiały treningowe
 
 Jakość danych ma większy wpływ na wynik niż wybór architektury sieci.
@@ -1018,8 +1075,10 @@ wynik zależy od losowania.
   jeszcze lepszą separację embeddingów niż obecne podejście.
   To bardziej zaawansowany, ale bardzo pouczający temat "one-shot/few-shot
   learning".
-- Dodać zapis logów rozpoznań (kto i kiedy został rozpoznany) do pliku
-  CSV/bazy danych — np. jako prosty system obecności na zajęciach.
+- **Dodać zapis logów rozpoznań** (kto i kiedy został rozpoznany) do pliku
+  CSV/bazy danych — prosty system obecności jest już w kroku 8
+  (`common/rejestr.py`). Rozbudujcie go: dodajcie drugi tryb zapisu (tylko
+  wejście/wyjście), raport tygodniowy albo wykres frekwencji w czasie.
 - Poeksperymentować z inną architekturą backbone'u (np.
   `resnet18`, `efficientnet_b0`) i porównać dokładność/szybkość.
 - **Zebrać trudniejszy zbiór testowy** (zdjęcia z innego dnia, innego
