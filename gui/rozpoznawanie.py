@@ -8,6 +8,8 @@ przez wątek kamery:
   każdej klatce,
 - wzorce można przeładować po treningu bez restartu aplikacji,
 - rozpoznawanie emocji jest opcjonalne i domyślnie WYŁĄCZONE (AI Act),
+- wyjaśnianie decyzji (XAI) uruchamia się na żądanie i korzysta z tej samej
+  klatki, na której policzono wynik,
 - wszystkie metody są bezpieczne wątkowo: Flask obsługuje żądania w kilku
   wątkach, a wątek kamery liczy rozpoznawanie równolegle.
 """
@@ -28,6 +30,7 @@ from common.rozpoznawanie import (
     przygotuj_obrazy_kamery,
     wczytaj_wzorce,
 )
+from common.xai import wczytaj_zrodla_wzorcow, wyjasnij_twarz
 
 
 class SilnikRozpoznawania:
@@ -41,6 +44,9 @@ class SilnikRozpoznawania:
         self._detektor: DetektorTwarzy | None = None
         self._przygotuj_obrazy = []
         self._wzorce: dict[str, dict] = {}
+        # Opcjonalne metadane XAI: z ktorych zdjec treningowych powstaly
+        # kolejne prototypy. Stary plik wzorcow po prostu ich nie ma.
+        self._zrodla: dict[str, list[dict]] = {}
         self._emocje: RozpoznawaczEmocji | None = None
         self._emocje_wlaczone = False
         self._korekta_progu = 0.0
@@ -83,6 +89,7 @@ class SilnikRozpoznawania:
             detektor = DetektorTwarzy()
             przygotuj_obrazy = przygotuj_obrazy_kamery()
             wzorce = wczytaj_wzorce(urzadzenie=urzadzenie)
+            zrodla = wczytaj_zrodla_wzorcow()
         except (BrakWzorcowError, NiepoprawneWzorceError) as blad:
             with self._zamek:
                 self._blad = str(blad)
@@ -100,6 +107,7 @@ class SilnikRozpoznawania:
             self._detektor = detektor
             self._przygotuj_obrazy = przygotuj_obrazy
             self._wzorce = wzorce
+            self._zrodla = zrodla
             self._gotowy = True
             self._ladowanie = False
 
@@ -115,8 +123,10 @@ class SilnikRozpoznawania:
             urzadzenie = self._urzadzenie
 
         wzorce = wczytaj_wzorce(urzadzenie=urzadzenie)
+        zrodla = wczytaj_zrodla_wzorcow()
         with self._zamek:
             self._wzorce = wzorce
+            self._zrodla = zrodla
             self._blad = None
         return len(wzorce)
 
@@ -159,7 +169,66 @@ class SilnikRozpoznawania:
                 "emocje_wlaczone": self._emocje_wlaczone,
                 "urzadzenie": str(self._urzadzenie) if self._urzadzenie else None,
                 "korekta_progu": self._korekta_progu,
+                # Czy w pliku wzorcow sa zapisane zrodla prototypow. Bez nich
+                # XAI nadal liczy mape okluzji, ale nie pokaze miniatur.
+                "xai_zrodla": bool(self._zrodla),
+                "xai_liczba_zrodel": sum(
+                    len(pozycje) for pozycje in self._zrodla.values()
+                ),
             }
+
+    def wyjasnij(
+        self,
+        klatka: np.ndarray,
+        wynik: dict,
+        top: int = 5,
+        siatka: int = 6,
+    ) -> dict:
+        """Wyjaśnia decyzję dla jednej twarzy z podanego wyniku rozpoznania.
+
+        ``wynik`` to słownik zwrócony przez :meth:`analizuj` (zawiera
+        współrzędne twarzy w pikselach). ``klatka`` musi być CZYSTĄ klatką,
+        na której ten wynik policzono — bez narysowanych ramek i podpisów.
+        W przeciwnym razie model „widziałby” w wyjaśnieniu zieloną ramkę,
+        której nie było podczas rozpoznawania.
+
+        XAI jest kosztowne (kilkadziesiąt przejść przez sieć), dlatego
+        wywołujemy je tylko po kliknięciu w panelu, a nie przy każdej klatce.
+        """
+        with self._zamek:
+            if not self._gotowy or self._ekstraktor is None:
+                raise RuntimeError("Silnik rozpoznawania nie jest jeszcze gotowy.")
+            ekstraktor = self._ekstraktor
+            przygotuj_obrazy = self._przygotuj_obrazy
+            wzorce = self._wzorce
+            urzadzenie = self._urzadzenie
+            zrodla = dict(self._zrodla)
+            korekta = self._korekta_progu
+
+        try:
+            prostokat = (
+                int(wynik["x"]),
+                int(wynik["y"]),
+                int(wynik["szerokosc"]),
+                int(wynik["wysokosc"]),
+            )
+        except (KeyError, TypeError, ValueError) as blad:
+            raise ValueError(
+                "Wynik nie zawiera poprawnych współrzędnych twarzy."
+            ) from blad
+
+        return wyjasnij_twarz(
+            klatka,
+            ekstraktor,
+            przygotuj_obrazy,
+            wzorce,
+            urzadzenie,
+            zrodla=zrodla,
+            korekta_progu=korekta,
+            prostokat=prostokat,
+            top=top,
+            siatka=siatka,
+        )
 
     def analizuj(self, klatka: np.ndarray) -> list[dict]:
         """Zwraca listę wyników dla wszystkich twarzy na klatce.

@@ -97,6 +97,7 @@ from common.model import (
 
 FOLDER_PRZETWORZONYCH_DANYCH = Path(__file__).parent / "data" / "processed"
 FOLDER_MODELI = Path(__file__).parent / "models"
+KORZEN_PROJEKTU = Path(__file__).resolve().parent
 
 # Nazwa folderu klasy "nieznajomy" (patrz pobierz_zdjecia_nieznajomych.py) -
 # to NIE jest prawdziwa, rozpoznawana osoba, wiec pomijamy ja przy liczeniu
@@ -186,18 +187,23 @@ def policz_embeddingi(
     urzadzenie: torch.device,
     rozmiar_batcha: int,
     postep: Postep | None = None,
-) -> tuple[torch.Tensor, list[int], list[str]]:
+) -> tuple[torch.Tensor, list[int], list[str], list[Path]]:
     """Liczy znormalizowane embeddingi wszystkich zdjec w podanym folderze
     (train lub val), pogrupowanych na podfoldery-klasy (osoby).
 
     Zwraca:
       - macierz embeddingow o ksztalcie [liczba_zdjec, wymiar_cech],
-      - liste numerow klas (indeksow) odpowiadajacych kolejnym zdjeciom,
-      - liste nazw klas (osob) w kolejnosci ustalonej przez ImageFolder.
+      - liste numerow klas (indeksow) odpowiadajacych kolejnym zdjecim,
+      - liste nazw klas (osob) w kolejnosci ustalonej przez ImageFolder,
+      - liste sciezek plikow w tej samej kolejnosci co wiersze macierzy
+        (lista plikow powtorzona dla kazdego wariantu jasnosci, zeby indeksy
+        sciezek odpowiadaly indeksom embeddingow).
     """
     wszystkie_embeddingi = []
     wszystkie_etykiety: list[int] = []
     klasy: list[str] | None = None
+    sciezki: list[Path] = []
+    liczba_plikow_wariantu = 0
     for wspolczynnik_jasnosci in WSPOLCZYNNIKI_JASNOSCI:
         przygotuj_obraz = transforms.Compose(
             [
@@ -210,8 +216,17 @@ def policz_embeddingi(
         zbior = datasets.ImageFolder(folder, transform=przygotuj_obraz)
         if klasy is None:
             klasy = zbior.classes
+            liczba_plikow_wariantu = len(zbior.samples)
         elif zbior.classes != klasy:
             raise RuntimeError(f"Lista klas zmienila sie podczas czytania danych z {folder}.")
+        elif len(zbior.samples) != liczba_plikow_wariantu:
+            raise RuntimeError(
+                f"Liczba zdjec zmienila sie podczas czytania danych z {folder}."
+            )
+        # ImageFolder zwraca pliki w stalej, posortowanej kolejnosci - ta sama
+        # kolejnosc obowiazuje dla kazdego wariantu jasnosci. Powtarzamy liste
+        # dla kazdego wariantu, bo embeddingi tez sa doklejane wariantami.
+        sciezki.extend(Path(plik) for plik, _ in zbior.samples)
 
         ladowarka = DataLoader(zbior, batch_size=rozmiar_batcha, shuffle=False, num_workers=2)
         for obrazy, etykiety in ladowarka:
@@ -224,44 +239,88 @@ def policz_embeddingi(
 
     if klasy is None or not wszystkie_embeddingi:
         raise SystemExit(f"Brak zdjec do przetworzenia w {folder}.")
-    return torch.cat(wszystkie_embeddingi, dim=0), wszystkie_etykiety, klasy
+    return torch.cat(wszystkie_embeddingi, dim=0), wszystkie_etykiety, klasy, sciezki
+
+
+def _sciezka_wzgledna(sciezka: Path) -> str:
+    """Sciezka zdjecia wzgledem katalogu projektu (przenosna, z ukośnikami)."""
+    try:
+        return sciezka.resolve().relative_to(KORZEN_PROJEKTU).as_posix()
+    except ValueError:
+        return sciezka.as_posix()
 
 
 def zbuduj_wzorce(
-    embeddingi_trening: torch.Tensor, etykiety_trening: list[int], klasy: list[str]
-) -> dict[str, torch.Tensor]:
+    embeddingi_trening: torch.Tensor,
+    etykiety_trening: list[int],
+    klasy: list[str],
+    sciezki_trening: list[Path] | None = None,
+) -> tuple[dict[str, torch.Tensor], dict[str, list[dict]]]:
     """Zachowuje embeddingi zdjec kazdej znanej osoby jako wiele wzorcow
     obejmujacych rozne ujecia twarzy.
 
     Pomija klase NAZWA_KLASY_NIEZNAJOMY - to nie jest prawdziwa osoba do
     rozpoznania, tylko pomocniczy zbior "obcych" twarzy uzywany wylacznie
     do kalibracji progu (patrz skalibruj_progi ponizej).
+
+    Zwraca takze metadane "zrodla": dla kazdego prototypu sciezke zdjecia i
+    wariant jasnosci. Dzieki temu panel XAI moze pokazac, z ktorych zdjec
+    treningowych naprawde powstal wzorzec. Starsze pliki wzorcow nie maja
+    tego pola - wtedy dziala sama mapa okluzji i ranking kandydatow.
     """
     wzorce: dict[str, torch.Tensor] = {}
+    zrodla: dict[str, list[dict]] = {}
+
     for indeks_klasy, nazwa_osoby in enumerate(klasy):
         if nazwa_osoby == NAZWA_KLASY_NIEZNAJOMY:
             continue
         maska = torch.tensor([e == indeks_klasy for e in etykiety_trening])
-        embeddingi_osoby = embeddingi_trening[maska]
+        indeksy_osoby = torch.nonzero(maska, as_tuple=False).flatten()
+        embeddingi_osoby = embeddingi_trening[indeksy_osoby]
         if embeddingi_osoby.shape[0] == 0:
             print(f"[uwaga] Brak zdjec treningowych dla '{nazwa_osoby}' - pomijam.")
             continue
 
+        sciezki_osoby = (
+            [sciezki_trening[i] for i in indeksy_osoby.tolist()]
+            if sciezki_trening is not None
+            else []
+        )
+        liczba_wariantow = len(WSPOLCZYNNIKI_JASNOSCI)
+        rozmiar_wariantu = (
+            len(sciezki_osoby) // liczba_wariantow if sciezki_osoby else 0
+        )
+
         prototypy = []
-        for embeddingi_wariantu in embeddingi_osoby.chunk(len(WSPOLCZYNNIKI_JASNOSCI)):
+        zrodla_osoby: list[dict] = []
+        for numer_wariantu, embeddingi_wariantu in enumerate(
+            embeddingi_osoby.chunk(liczba_wariantow)
+        ):
             liczba_wzorcow = min(MAKS_WZORCOW_NA_JASNOSC, embeddingi_wariantu.shape[0])
             indeksy = torch.linspace(
                 0, embeddingi_wariantu.shape[0] - 1, liczba_wzorcow
             ).round().long()
             prototypy.append(embeddingi_wariantu[indeksy])
 
+            if sciezki_osoby:
+                for indeks in indeksy.tolist():
+                    pozycja = numer_wariantu * rozmiar_wariantu + indeks
+                    if 0 <= pozycja < len(sciezki_osoby):
+                        zrodla_osoby.append(
+                            {
+                                "plik": _sciezka_wzgledna(sciezki_osoby[pozycja]),
+                                "jasnosc": WSPOLCZYNNIKI_JASNOSCI[numer_wariantu],
+                            }
+                        )
+
         wzorce[nazwa_osoby] = torch.cat(prototypy, dim=0)
+        zrodla[nazwa_osoby] = zrodla_osoby
         print(
             f"[info] Wzorce '{nazwa_osoby}' zbudowane z {embeddingi_osoby.shape[0]} "
             f"zdjec (zachowano {wzorce[nazwa_osoby].shape[0]} prototypow)."
         )
 
-    return wzorce
+    return wzorce, zrodla
 
 
 def skalibruj_progi(
@@ -403,13 +462,18 @@ def main() -> None:
     )
 
     print("[info] Liczenie embeddingow zbioru treningowego...")
-    embeddingi_trening, etykiety_trening, klasy = policz_embeddingi(
+    embeddingi_trening, etykiety_trening, klasy, sciezki_trening = policz_embeddingi(
         ekstraktor, folder_train, urzadzenie, argumenty.batch_size, postep
     )
     print(f"[info] Klasy ({len(klasy)}): {klasy}")
 
     print("[info] Liczenie embeddingow zbioru walidacyjnego...")
-    embeddingi_walidacja, etykiety_walidacja, klasy_walidacja = policz_embeddingi(
+    (
+        embeddingi_walidacja,
+        etykiety_walidacja,
+        klasy_walidacja,
+        _,
+    ) = policz_embeddingi(
         ekstraktor, folder_val, urzadzenie, argumenty.batch_size, postep
     )
     if klasy_walidacja != klasy:
@@ -418,7 +482,9 @@ def main() -> None:
             "02_podzial_danych.py, aby je zsynchronizowac."
         )
 
-    wzorce = zbuduj_wzorce(embeddingi_trening, etykiety_trening, klasy)
+    wzorce, zrodla = zbuduj_wzorce(
+        embeddingi_trening, etykiety_trening, klasy, sciezki_trening
+    )
     if not wzorce:
         raise SystemExit(
             "Nie udalo sie zbudowac zadnego wzorca tozsamosci - sprawdz, czy "
@@ -439,6 +505,9 @@ def main() -> None:
                 # .tolist() zamienia tensory PyTorch na listy liczb JSON.
                 "prototypy": wzorzec.tolist(),
                 "prog_podobienstwa": kalibracja[nazwa_osoby]["prog"],
+                # Metadane XAI: z ktorych zdjec i przy jakiej jasnosci
+                # powstaly kolejne prototypy (ta sama kolejnosc co lista).
+                "zrodla": zrodla.get(nazwa_osoby, []),
             }
             for nazwa_osoby, wzorzec in wzorce.items()
         },

@@ -378,3 +378,62 @@ body.sidebar-zwiniety .app-main {
   border-radius: 0.45rem 0.45rem 0 0;
   background: #e9ecef;
 }
+
+/* ------------------------------------------------------ rozpoznawanie: XAI */
+.xai-wzorce {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 0.5rem;
+}
+
+.xai-wzorzec-karta {
+  min-width: 0;
+}
+
+.xai-wzorzec {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border: 1px solid #dee2e6;
+  border-radius: 0.45rem;
+  background: #e9ecef;
+}
+
+.xai-wzorzec-brak {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  padding: 0.25rem;
+  border: 1px dashed #ced4da;
+  border-radius: 0.45rem;
+  background: #f1f3f5;
+  color: #adb5bd;
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.xai-wzorzec-opis {
+  margin-top: 0.25rem;
+  overflow: hidden;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xai-wzorzec-meta {
+  color: #6c757d;
+  font-size: 0.72rem;
+}
+
+.xai-mapa {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid #dee2e6;
+  border-radius: 0.45rem;
+  background: #fff;
+}

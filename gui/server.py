@@ -50,6 +50,10 @@ Endpointy:
   POST /api/rejestr/usun-dzien      usuń wpisy dnia
   POST /api/rejestr/wyczysc         usuń cały rejestr
   GET  /api/rejestr/eksport         CSV z frekwencją dnia (?data=...)
+
+  POST /api/xai/wyjasnij            wyjaśnij decyzję dla twarzy o numerze
+  GET  /api/xai/obraz/<nazwa>       wizualizacja mapy okluzji (PNG)
+  GET  /api/xai/wzorzec?plik=...    zdjęcie treningowe użyte jako wzorzec
 """
 
 from __future__ import annotations
@@ -71,6 +75,7 @@ from common.dane_osob import (
     usun_dane_osoby,
 )
 from common.rejestr import RejestrObecnosci, poprawna_data
+from common.xai import FOLDER_TRENINGU, FOLDER_XAI, KORZEN as KORZEN_PROJEKTU
 from gui.camera_stream import (
     TRYB_DETEKCJA,
     TRYB_ROZPOZNAWANIE,
@@ -133,6 +138,28 @@ def _plik_ewaluacji(folder: Path, nazwa: str) -> Path | None:
         return None
     sciezka = folder / bezpieczna
     return sciezka if sciezka.is_file() else None
+
+
+def _sciezka_wzorca(plik: str) -> Path | None:
+    """Zamienia względną ścieżkę z pliku wzorców na bezpieczny plik zdjęcia.
+
+    Metadane XAI zapisują ścieżki względem katalogu projektu, np.
+    ``data/processed/train/gracjan/gracjan_0000.jpg``. Dopuszczamy wyłącznie
+    pliki wewnątrz ``data/processed/train`` — nawet gdyby ktoś podmienił plik
+    JSON, serwer nie może odczytać dowolnego pliku z dysku.
+    """
+    if not plik:
+        return None
+    kandydat = (KORZEN_PROJEKTU / Path(plik)).resolve()
+    try:
+        kandydat.relative_to(FOLDER_TRENINGU.resolve())
+    except ValueError:
+        return None
+    if not kandydat.is_file():
+        return None
+    if kandydat.suffix.lower() not in ROZSZERZENIA_ZDJEC:
+        return None
+    return kandydat
 
 
 def _opis_bazy() -> dict:
@@ -733,6 +760,66 @@ def utworz_aplikacje(
                 )
             },
         )
+
+    # ----------------------------------------------------------------- xai
+    @aplikacja.post("/api/xai/wyjasnij")
+    def xai_wyjasnij():
+        dane = request.get_json(silent=True) or {}
+        try:
+            indeks = int(dane.get("indeks", 0))
+            top = int(dane.get("top", 5))
+            siatka = int(dane.get("siatka", 6))
+        except (TypeError, ValueError):
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "komunikat": "Parametry XAI muszą być liczbami (indeks, top, siatka).",
+                    }
+                ),
+                400,
+            )
+
+        if not 0 <= top <= 20:
+            return jsonify({"ok": False, "komunikat": "TOP musi być w zakresie 0-20."}), 400
+        if not 2 <= siatka <= 10:
+            return (
+                jsonify({"ok": False, "komunikat": "Siatka musi mieć 2-10 komórek."}),
+                400,
+            )
+
+        try:
+            wynik = strumien.wyjasnij(indeks, top=top, siatka=siatka)
+        except ValueError as blad:
+            return jsonify({"ok": False, "komunikat": str(blad)}), 400
+        except RuntimeError as blad:
+            return jsonify({"ok": False, "komunikat": str(blad)}), 409
+        except Exception as blad:  # noqa: BLE001 - błąd modelu pokazujemy w panelu
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "komunikat": f"Nie udało się wyjaśnić decyzji: {blad}",
+                    }
+                ),
+                500,
+            )
+
+        return jsonify(wynik)
+
+    @aplikacja.get("/api/xai/obraz/<nazwa>")
+    def xai_obraz(nazwa: str):
+        sciezka = _plik_ewaluacji(FOLDER_XAI, nazwa)
+        if sciezka is None:
+            return jsonify({"ok": False, "komunikat": "Nie ma takiej wizualizacji."}), 404
+        return send_file(sciezka, max_age=0)
+
+    @aplikacja.get("/api/xai/wzorzec")
+    def xai_wzorzec():
+        sciezka = _sciezka_wzorca(request.args.get("plik", ""))
+        if sciezka is None:
+            return jsonify({"ok": False, "komunikat": "Nie ma takiego wzorca."}), 404
+        return send_file(sciezka, max_age=0)
 
     # ---------------------------------------------------------------- baza
     @aplikacja.get("/api/baza")

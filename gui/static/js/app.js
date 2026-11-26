@@ -40,6 +40,10 @@
     listaOsobModelu: document.getElementById('listaOsobModelu'),
     badgeWyniku: document.getElementById('badgeWyniku'),
     wynikiRozpoznawania: document.getElementById('wynikiRozpoznawania'),
+    xaiBadge: document.getElementById('xaiBadge'),
+    xaiTwarz: document.getElementById('xaiTwarz'),
+    btnWyjasnij: document.getElementById('btnWyjasnij'),
+    xaiWynik: document.getElementById('xaiWynik'),
 
     panelDodawanie: document.getElementById('panelDodawanie'),
     osobaNazwa: document.getElementById('osobaNazwa'),
@@ -325,6 +329,8 @@
     czasRaportuTestTrudny: null,
     ostatnieWyniki: '',
     rejestr: null,
+    xaiLiczy: false,
+    xaiSygnatura: '',
   };
 
   // ------------------------------------------------------------- pomocnicze
@@ -686,6 +692,8 @@
     const wyniki =
       aktywne && dane.wyniki_aktualne && Array.isArray(dane.wyniki) ? dane.wyniki : [];
 
+    aktualizujWyborXai(wyniki, aktywne);
+
     if (!wyniki.length) {
       if (stan.ostatnieWyniki === '') {
         return;
@@ -762,6 +770,142 @@
         );
       })
       .join('<hr class="my-2">');
+  }
+
+  // ------------------------------------------------------------------ XAI
+  function aktualizujWyborXai(wyniki, aktywne) {
+    const opcje = aktywne && Array.isArray(wyniki) ? wyniki : [];
+    // Sygnatura zmienia się tylko wtedy, gdy zmienił się skład twarzy.
+    // Dzięki temu lista nie jest przebudowywana co sekundę i nie gubi wyboru.
+    const sygnatura = JSON.stringify(
+      opcje.map((wynik) => wynik.osoba || NIEZNANA_OSOBA),
+    );
+    if (sygnatura === stan.xaiSygnatura) {
+      return;
+    }
+    stan.xaiSygnatura = sygnatura;
+
+    const poprzedni = el.xaiTwarz.value;
+    el.xaiTwarz.innerHTML = opcje.length
+      ? opcje
+          .map((wynik, indeks) => {
+            const osoba = wynik.osoba || NIEZNANA_OSOBA;
+            const opis = `Twarz ${indeks + 1}: ${osoba}`;
+            return `<option value="${indeks}">${escapeHtml(opis)}</option>`;
+          })
+          .join('')
+      : '<option value="">Brak wyników</option>';
+
+    if (poprzedni !== '' && Number(poprzedni) < opcje.length) {
+      el.xaiTwarz.value = poprzedni;
+    }
+
+    const dostepne = opcje.length > 0;
+    el.xaiTwarz.disabled = !dostepne || stan.xaiLiczy;
+    el.btnWyjasnij.disabled = !dostepne || stan.xaiLiczy;
+  }
+
+  async function wyjasnijDecyzje() {
+    if (stan.xaiLiczy) {
+      return;
+    }
+    const indeks = Number(el.xaiTwarz.value);
+    if (!Number.isInteger(indeks) || indeks < 0) {
+      pokazBlad('Najpierw wybierz twarz do wyjaśnienia.');
+      return;
+    }
+
+    stan.xaiLiczy = true;
+    el.xaiTwarz.disabled = true;
+    el.btnWyjasnij.disabled = true;
+    el.btnWyjasnij.innerHTML =
+      '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Liczę…';
+    el.xaiBadge.textContent = 'liczę…';
+    el.xaiBadge.className = 'badge text-bg-warning ms-auto';
+
+    try {
+      const dane = await wyslij('/api/xai/wyjasnij', { indeks });
+      renderXai(dane);
+    } catch (blad) {
+      pokazBlad(blad.message);
+      el.xaiBadge.textContent = 'błąd';
+      el.xaiBadge.className = 'badge text-bg-danger ms-auto';
+      el.xaiWynik.innerHTML =
+        `<div class="alert alert-danger mb-0 py-2">${escapeHtml(blad.message)}</div>`;
+    } finally {
+      stan.xaiLiczy = false;
+      el.btnWyjasnij.textContent = 'Wyjaśnij decyzję';
+      const dostepne = el.xaiTwarz.value !== '';
+      el.xaiTwarz.disabled = !dostepne;
+      el.btnWyjasnij.disabled = !dostepne;
+    }
+  }
+
+  function renderXai(dane) {
+    const rozpoznana = Boolean(dane.rozpoznana);
+    el.xaiBadge.textContent = rozpoznana ? 'rozpoznana' : 'poniżej progu';
+    el.xaiBadge.className = `badge ms-auto ${
+      rozpoznana ? 'text-bg-success' : 'text-bg-warning'
+    }`;
+
+    const kandydaci = Array.isArray(dane.kandydaci) ? dane.kandydaci.slice(0, 3) : [];
+    const ranking = kandydaci.length
+      ? kandydaci
+          .map(
+            (kandydat) =>
+              `<span class="badge ${
+                kandydat.akceptacja ? 'text-bg-success' : 'text-bg-light border'
+              }">${escapeHtml(kandydat.osoba)} ${formatujProcent(kandydat.podobienstwo)}</span>`,
+          )
+          .join(' ')
+      : '<span class="text-muted">brak rankingu</span>';
+
+    const wzorce = Array.isArray(dane.wzorce) ? dane.wzorce : [];
+    const miniatury = wzorce.length
+      ? `<div class="xai-wzorce">${wzorce
+          .map((wzorzec) => {
+            const obraz = wzorzec.url
+              ? `<img class="xai-wzorzec" src="${wzorzec.url}" alt="Wzorzec: ${escapeHtml(
+                  wzorzec.osoba,
+                )}" loading="lazy">`
+              : '<div class="xai-wzorzec-brak">bez zdjęcia</div>';
+            const jasnosc = Number(wzorzec.jasnosc);
+            return (
+              '<div class="xai-wzorzec-karta">' +
+              obraz +
+              `<div class="xai-wzorzec-opis">${escapeHtml(wzorzec.osoba)}</div>` +
+              `<div class="xai-wzorzec-meta">${formatujProcent(wzorzec.podobienstwo)}` +
+              (Number.isFinite(jasnosc) ? ` · jasność ${formatuj(jasnosc, 2)}` : '') +
+              '</div></div>'
+            );
+          })
+          .join('')}</div>`
+      : '<p class="text-muted mb-0">Ten model nie ma zapisanych źródeł wzorców. Uruchom ponownie trening (krok 03), aby zobaczyć galerię zdjęć treningowych.</p>';
+
+    const mapa = dane.obraz_url
+      ? `<img class="xai-mapa" src="${dane.obraz_url}" alt="Mapa okluzji: oryginał i obszary ważne dla decyzji">`
+      : '<p class="text-muted mb-0">Nie udało się zapisać wizualizacji mapy.</p>';
+
+    const prog =
+      dane.prog === null || dane.prog === undefined
+        ? ''
+        : ` / próg ${formatujProcent(dane.prog)}`;
+
+    el.xaiWynik.innerHTML =
+      '<div class="d-flex flex-wrap align-items-center gap-2 mb-2">' +
+      `<span class="fw-semibold">${escapeHtml(dane.osoba)}</span>` +
+      `<span class="text-mono">${formatujProcent(dane.podobienstwo)}${prog}</span>` +
+      `<span class="text-muted ms-auto">${dane.liczba_wzorcow} prototypów · ${dane.czas_ms} ms</span>` +
+      '</div>' +
+      `<div class="mb-3">${ranking}</div>` +
+      `<p class="mb-2">${escapeHtml(dane.opis)}. Największy spadek podobieństwa: ` +
+      `<strong>${formatujProcent(dane.maks_spadek)}</strong>.</p>` +
+      '<h6 class="mt-3">Najbliższe wzorce treningowe</h6>' +
+      miniatury +
+      '<h6 class="mt-3">Mapa okluzji</h6>' +
+      mapa +
+      '<p class="text-muted mt-2 mb-0">Wyjaśnienie dotyczy jednej, zapisanej ' +
+      'klatki — nie aktualizuje się przy każdej zmianie kadru.</p>';
   }
 
   async function odswiezStatus() {
@@ -2190,6 +2334,7 @@
     el.proporcja.addEventListener('input', synchronizujSuwaki);
     el.korektaProgu.addEventListener('change', ustawKorekte);
     el.przelacznikEmocji.addEventListener('change', przelaczEmocje);
+    el.btnWyjasnij.addEventListener('click', wyjasnijDecyzje);
 
     el.btnOdswiezKamery.addEventListener('click', odswiezKamery);
     el.btnOdswiezKameryModal.addEventListener('click', odswiezKamery);

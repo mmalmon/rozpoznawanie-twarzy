@@ -44,7 +44,7 @@ Panel prowadzi cały proces — nie trzeba już przełączać się do konsoli:
 | Zakładka | Co robi |
 | --- | --- |
 | **Detekcja na żywo** | Ramki wokół twarzy, procent pewności, FPS, liczba twarzy. Wybór kamery, progu i minimalnej proporcji twarzy. |
-| **Rozpoznawanie** | Wczytuje `models/wzorce_osob.json` w tle i pokazuje imię + podobieństwo. Karta **Wynik rozpoznawania** pokazuje TOP-3 kandydatów: paski podobieństwa i znacznik progu. Suwak **Korekta progu** (jak `--korekta-progu` w `04`). Przełącznik **Wykrywanie emocji** (domyślnie OFF). |
+| **Rozpoznawanie** | Wczytuje `models/wzorce_osob.json` w tle i pokazuje imię + podobieństwo. Karta **Wynik rozpoznawania** pokazuje TOP-3 kandydatów: paski podobieństwa i znacznik progu. Karta **Wyjaśnienie decyzji (XAI)** pokazuje najbliższe wzorce treningowe i mapę okluzji dla wybranej twarzy. Suwak **Korekta progu** (jak `--korekta-progu` w `04`). Przełącznik **Wykrywanie emocji** (domyślnie OFF). |
 | **Dodaj twarz** | Zapisuje wycięte twarze 224×224 do `data/raw/<osoba>/` co ok. 0,3 s, z licznikiem i celem. Działa jak automatyczny tryb `01_zbieranie_danych.py`. Przełącznik **Zapisz jako test trudny** kieruje zdjęcia do `data/raw_test/<osoba>/` (osobny zbiór do kroku 7). |
 | **Trening** | Uruchamia `02_podzial_danych.py` (train/val/test), a potem `03_trenowanie_modelu.py --postep` w osobnym procesie. Pasek postępu, etap, log i przycisk **Przerwij**. |
 | **Ewaluacja** | Uruchamia `07_ewaluacja.py --postep` w osobnym procesie. Pokazuje accuracy, FAR/FRR, EER, AUC, **95% przedziały ufności**, metryki na osobę, porównanie metod, wykresy PNG i galerię pomyłek. |
@@ -60,7 +60,8 @@ Dodatkowo:
 - start/stop podglądu z poprawnym zwalnianiem kamery,
 - statusy i komunikaty błędów w postaci toastów,
 - po udanym treningu silnik **przeładowuje wzorce bez restartu** panelu,
-- TOP-3 kandydatów w rozpoznawaniu (bez zmiany logiki decyzyjnej `04`).
+- TOP-3 kandydatów w rozpoznawaniu (bez zmiany logiki decyzyjnej `04`),
+- XAI na żądanie: najbliższe wzorce, mapa okluzji i zapis wizualizacji.
 
 ## Jak to działa
 
@@ -77,6 +78,7 @@ gui/templates/         index.html (jeden widok, przełączane zakładki)
 gui/static/            Bootstrap 5 (lokalnie) + app.css + app.js
 common/rozpoznawanie.py wspólna logika dopasowania używana też przez 04
 common/rejestr.py      rejestr obecności w SQLite (zapis, frekwencja, CSV, retencja)
+common/xai.py          najbliższe prototypy, mapa okluzji i wizualizacja PNG
 ```
 
 - Klatki nie przechodzą przez mostek JS↔Python — serwer wystawia je jako
@@ -146,6 +148,10 @@ POST /api/rejestr/dopisz        ręcznie dopisz obecność (osoba, data)
 POST /api/rejestr/usun-dzien    usuń wpisy dnia (wymaga potwierdzenia datą)
 POST /api/rejestr/wyczysc       usuń cały rejestr (wymaga wpisania WYCZYSC)
 GET  /api/rejestr/eksport       CSV z frekwencją dnia (?data=...)
+
+POST /api/xai/wyjasnij          wyjaśnij decyzję (JSON: indeks, top, siatka)
+GET  /api/xai/obraz/<nazwa>     wizualizacja mapy okluzji (PNG)
+GET  /api/xai/wzorzec?plik=...  zdjęcie treningowe użyte jako wzorzec
 ```
 
 ## Trening i pasek postępu
@@ -281,6 +287,40 @@ Zdjęcia do testu trudnego zbierzesz w zakładce **Dodaj twarz**: przełącznik
 **Zapisz jako test trudny** zmienia folder docelowy na `data/raw_test`.
 Nie mieszaj ich z `data/raw` — po zmieszaniu trafiłyby do treningu i test
 przestałby być uczciwy.
+
+## Wyjaśnianie decyzji (XAI)
+
+Karta **Wyjaśnienie decyzji (XAI)** w zakładce **Rozpoznawanie** odpowiada na
+pytanie „dlaczego model wybrał tę osobę?”. Nie uruchamia się przy każdej
+klatce — dopiero po kliknięciu **Wyjaśnij decyzję** dla wybranej twarzy.
+
+Dwa mechanizmy (szczegóły w `common/xai.py`):
+
+1. **Najbliższe wzorce** — ranking prototypów najbardziej podobnych do
+   embeddingu twarzy. Panel pokazuje miniatury zdjęć treningowych, osobę,
+   podobieństwo i wariant jasności.
+2. **Mapa okluzji** — twarz dzielona jest na siatkę (domyślnie 6×6). Każda
+   komórka jest kolejno zasłaniana szarym kwadratem, a spadek podobieństwa do
+   wybranej osoby trafia do mapy. Panel pokazuje oryginał i mapę cieplną
+   (czerwony = fragment najważniejszy dla decyzji).
+
+Wyjaśnienie trwa zwykle poniżej sekundy na GPU (na CPU kilka sekund), bo
+wszystkie zasłonięte warianty przechodzą przez sieć w jednej paczce. Wyniki
+trafiają do `models/xai/`: `raport_xai.json` i `wyjasnienie_*.png`.
+
+**Ważne:** miniatury wzorców pojawią się dopiero po ponownym treningu nową
+wersją `03_trenowanie_modelu.py`, która zapisuje pole `zrodla` w
+`models/wzorce_osob.json`. Starszy plik wzorców nadal działa — mapa okluzji i
+ranking są liczone, tylko galeria jest pusta. Endpoint `/api/xai/wzorzec`
+przyjmuje wyłącznie ścieżki wewnątrz `data/processed/train` i odrzuca próby
+wyjścia poza ten folder.
+
+Mapa okluzji to eksperyment, a nie dowód przyczynowości: sieć nie jest
+liniowa, a szary kwadrat wprowadza sztuczne zakłócenia. Traktuj ją jako
+wskazówkę, na co model zwraca uwagę.
+
+Ten sam mechanizm uruchomisz z konsoli:
+`python 11_wyjasnij.py --zdjecie plik.jpg --top 5 --siatka 6`.
 
 ## Frekwencja i prywatność
 

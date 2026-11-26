@@ -326,6 +326,54 @@
                 </p>
               </div>
             </div>
+
+            <div class="card app-card mt-3">
+              <div class="card-header d-flex align-items-center">
+                Wyjaśnienie decyzji (XAI)
+                <span class="badge text-bg-secondary ms-auto" id="xaiBadge">—</span>
+              </div>
+              <div class="card-body">
+                <p class="small text-muted mb-2">
+                  Zobacz, <em>na co</em> patrzył model: które zdjęcia treningowe
+                  najbardziej przypominają twarz i które jej fragmenty zmieniają
+                  decyzję. Wyjaśnianie trwa kilka sekund i uruchamia się na żądanie
+                  — nie przy każdej klatce.
+                </p>
+
+                <div class="row g-2 align-items-end mb-3">
+                  <div class="col-12 col-sm-7">
+                    <label class="form-label mb-1" for="xaiTwarz">Twarz do wyjaśnienia</label>
+                    <select class="form-select form-select-sm" id="xaiTwarz" disabled>
+                      <option value="">Brak wyników</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-sm-5">
+                    <button class="btn btn-sm btn-primary w-100" id="btnWyjasnij" type="button" disabled>
+                      Wyjaśnij decyzję
+                    </button>
+                  </div>
+                </div>
+
+                <div id="xaiWynik" class="small text-muted">
+                  Uruchom podgląd w trybie Rozpoznawanie i poczekaj na wynik.
+                </div>
+
+                <details class="small text-muted mt-3">
+                  <summary>Jak czytać wyjaśnienie?</summary>
+                  <p class="mb-1 mt-2">
+                    <strong>Najbliższe wzorce</strong> to zdjęcia treningowe, do których
+                    embedding twarzy jest najbardziej podobny. Odpowiadają na pytanie
+                    „na co model patrzył?”.
+                  </p>
+                  <p class="mb-0">
+                    <strong>Mapa okluzji</strong> zasłania kolejne fragmenty twarzy szarym
+                    kwadratem i mierzy spadek podobieństwa. Czerwone obszary najbardziej
+                    zmieniają decyzję. To eksperyment, a nie doskonałe wyjaśnienie —
+                    sieć nie jest liniowa, a zasłanianie wprowadza sztuczne zakłócenia.
+                  </p>
+                </details>
+              </div>
+            </div>
           </div>
 
           <!-- ---------------------------------------------- panel: dodawanie -->

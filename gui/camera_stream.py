@@ -114,6 +114,10 @@ class StrumienKamery:
         self._wyniki: list[dict] = []
         self._czas_wynikow = 0.0
         self._analiza_w_toku = False
+        # Ostatnia CZYSTA klatka, na ktorej policzono wyniki rozpoznawania.
+        # Trzymamy ja osobno, bo klatka wysylana do przegladarki ma juz
+        # narysowane ramki i podpisy - XAI musi widziec to samo, co model.
+        self._klatka_analizy = None
         self._executor: ThreadPoolExecutor | None = None
         # Detektor dla trybów detekcja/zbieranie. Tworzymy go przy starcie,
         # bo wczytanie YuNet z dysku przy KAŻDEJ klatce zabijałoby wydajność.
@@ -247,6 +251,7 @@ class StrumienKamery:
             self._wyniki = []
             self._czas_wynikow = 0.0
             self._analiza_w_toku = False
+            self._klatka_analizy = None
             self._detektor = (
                 DetektorTwarzy(prog_yunet=prog)
                 if tryb in (TRYB_DETEKCJA, TRYB_ZBIERANIE)
@@ -314,6 +319,7 @@ class StrumienKamery:
                         self._stan = STAN_ZATRZYMANY
                     self._klatka = None
                     self._wyniki = []
+                    self._klatka_analizy = None
 
     # ------------------------------------------------------------- tryby
     def _obsluz_detekcje(self, klatka) -> None:
@@ -397,6 +403,10 @@ class StrumienKamery:
             self._czas_wynikow = time.monotonic()
             self._twarze = len(wyniki)
             self._analiza_w_toku = False
+            # Zapisujemy dokladnie te klatke, ktora wlasnie przeanalizowano.
+            # Jest to kopia sprzed rysowania ramek, wiec XAI nie zobaczy
+            # sztucznych linii dodanych tylko dla czlowieka.
+            self._klatka_analizy = klatka
             tryb = self._tryb
             kamera = self._indeks_kamery
             rejestr = self._rejestr
@@ -545,6 +555,33 @@ class StrumienKamery:
             self._rejestr = rejestr
             self._blad_rejestru = None
 
+    def wyjasnij(self, indeks: int, top: int = 5, siatka: int = 6) -> dict:
+        """Wyjaśnia decyzję dla twarzy o podanym numerze z ostatniego wyniku.
+
+        Numer odpowiada kolejności twarzy w liście ``wyniki`` (tak samo jak
+        w panelu: „Twarz 1”, „Twarz 2”...). Metoda korzysta z ostatniej
+        czystej klatki analizy, a nie z podglądu z narysowanymi ramkami.
+        """
+        with self._zamek:
+            tryb = self._tryb
+            klatka = self._klatka_analizy
+            wyniki = list(self._wyniki)
+            silnik = self._silnik
+
+        if tryb != TRYB_ROZPOZNAWANIE:
+            raise RuntimeError(
+                "Wyjaśnianie jest dostępne tylko w trybie Rozpoznawanie."
+            )
+        if silnik is None or klatka is None or not wyniki:
+            raise RuntimeError(
+                "Brak aktualnego wyniku rozpoznawania. "
+                "Poczekaj, aż w kadrze pojawi się twarz."
+            )
+        if not 0 <= indeks < len(wyniki):
+            raise ValueError("Nie ma twarzy o podanym numerze.")
+
+        return silnik.wyjasnij(klatka, wyniki[indeks], top=top, siatka=siatka)
+
     def stop(self) -> None:
         """Zatrzymuje wątek kamery i zwalnia urządzenie."""
         self._stop.set()
@@ -569,6 +606,7 @@ class StrumienKamery:
             self._twarze = 0
             self._wyniki = []
             self._detektor = None
+            self._klatka_analizy = None
             self._czasy_klatek.clear()
 
     # ---------------------------------------------------------- odczyt

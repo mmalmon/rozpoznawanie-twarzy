@@ -25,6 +25,7 @@ w czasie rzeczywistym.
 13. [Krok 7 — test trudny](#krok-7--test-trudny)
 14. [Przedziały ufności — jak czytać niepewność wyniku](#przedziały-ufności--jak-czytać-niepewność-wyniku)
 15. [Krok 8 — rejestr rozpoznań i frekwencja](#krok-8--rejestr-rozpoznań-i-frekwencja)
+16. [Krok 9 — wyjaśnianie decyzji (XAI)](#krok-9--wyjaśnianie-decyzji-xai)
 
 ## Jak to działa (teoria dla uczniów)
 
@@ -134,6 +135,7 @@ rozpoznawanie twarzy/
 ├── 08_eksperymenty.py           # krok 6: wpływ liczby zdjęć, jasności, k w k-NN i progu
 ├── 09_test_trudny.py            # krok 7: osobny, trudny zbiór testowy + CI
 ├── 10_rejestr_obecnosci.py      # krok 8: podgląd, eksport i porządki rejestru obecności
+├── 11_wyjasnij.py               # krok 9: wyjaśnianie decyzji (XAI) dla zapisanego zdjęcia
 ├── listuj_kamery.py             # pomocniczy: wypisuje dostępne kamery i ich rozdzielczości
 ├── pobierz_zdjecia_nieznajomych.py  # pomocniczy: pobiera zdjecia "obcych" osob do kalibracji progu
 ├── Uruchom panel.bat            # dwuklik: uruchamia panel GUI (szuka Pythona z .venv)
@@ -150,6 +152,7 @@ rozpoznawanie twarzy/
 │   ├── model.py                 # definicja modelu (ekstraktor cech / embeddingi)
 │   ├── rejestr.py               # rejestr obecności w SQLite (bez zdjęć i emocji)
 │   ├── rozpoznawanie.py         # wspólna logika: wzorce, dopasowanie, emocje (04 + GUI)
+│   ├── xai.py                   # XAI: najbliższe prototypy, mapa okluzji, wizualizacja
 │   └── uruchom_w_venv.py        # restart skryptu w środowisku .venv
 ├── gui/
 │   ├── main.py                  # panel desktopowy: pywebview + Flask + Bootstrap (styl AdminLTE)
@@ -178,7 +181,8 @@ rozpoznawanie twarzy/
 │   ├── kalibracja_progu.png     # wykres pomagajacy zrozumiec dobor progu
 │   ├── ewaluacja/               # raport.json, wykresy/*.png, pomylki/*.jpg (po 07)
 │   ├── eksperymenty/            # raport_eksperymentow.json, wyniki.csv, wykresy/*.png (po 08)
-│   └── test_trudny/             # raport_test_trudny.json, wykresy/*.png (po 09)
+│   ├── test_trudny/             # raport_test_trudny.json, wykresy/*.png (po 09)
+│   └── xai/                     # raport_xai.json i wizualizacje mapy okluzji (po 11)
 ├── requirements.txt
 └── README.md
 ```
@@ -186,8 +190,8 @@ rozpoznawanie twarzy/
 > **Panel GUI** (`gui/main.py`) prowadzi cały proces bez konsoli: zbieranie
 > zdjęć do `data/raw`, trening z paskiem postępu (te same skrypty `02` i
 > `03`), rozpoznawanie wyuczonych osób na żywo, opcjonalne emocje,
-> przeglądanie i usuwanie bazy twarzy oraz rejestr frekwencji z eksportem
-> CSV. Skrypty `01`–`04` nadal działają i
+> przeglądanie i usuwanie bazy twarzy, rejestr frekwencji z eksportem
+> CSV oraz wyjaśnianie decyzji modelu (XAI). Skrypty `01`–`04` nadal działają i
 > uczą dokładnie tego samego pipeline'u — panel jest wygodnym skrótem, a nie
 > osobną implementacją. Gdy WebView2 nie działa, uruchom awaryjne GUI:
 > `python gui/tkinter_app.py`.
@@ -916,6 +920,76 @@ uczniowie z testu trudnego nie są przecież częścią klasy.
 > długo wolno trzymać wpisy? Co się stanie, gdy model pomyli dwie osoby?
 > Rejestr pokazuje, że techniczna poprawność to dopiero połowa decyzji —
 > druga połowa to prawo, zgoda i zaufanie.
+
+## Krok 9 — wyjaśnianie decyzji (XAI)
+
+Model odpowiada „to gracjan (87%)”, ale nie mówi **dlaczego**. Krok 9 dodaje
+dwa eksperymenty, które pozwalają zajrzeć do środka decyzji. Nie zmieniają
+modelu ani progów — tylko go badają.
+
+```powershell
+python 11_wyjasnij.py --zdjecie data/processed/train/gracjan/gracjan_0000.jpg
+python 11_wyjasnij.py --zdjecie moje_zdjecie.jpg --top 8 --siatka 8
+python 11_wyjasnij.py --zdjecie moje_zdjecie.jpg --bez-zapisu
+```
+
+### Dwa rodzaje wyjaśnień
+
+1. **Najbliższe wzorce** — dla badanej twarzy liczymy podobieństwo do
+   wszystkich prototypów i pokazujemy te najbliższe. To odpowiedź na pytanie
+   „na co model patrzył?”. Każdy wzorzec ma zapisaną ścieżkę zdjęcia
+   treningowego i wariant jasności, więc można sprawdzić, czy model nie
+   nauczył się czegoś przypadkowego (np. tła).
+2. **Mapa okluzji** (occlusion sensitivity) — dzielimy twarz na siatkę
+   (domyślnie 6×6). Dla każdej komórki zasłaniamy odpowiadający jej fragment
+   szarym kwadratem i mierzymy, o ile spada podobieństwo do wybranej osoby.
+   Duży spadek = fragment był ważny. Wynik zapisujemy jako obraz: oryginał
+   obok mapy cieplnej (czerwony = najważniejszy).
+
+**To nie jest doskonałe wyjaśnienie.** Sieć nie jest liniowa, a szary kwadrat
+wprowadza sztuczne zakłócenia. Mapa pokazuje korelację, nie dowód
+przyczynowości. Traktuj ją jak eksperyment: „co się stanie, gdy zasłonię
+oczy?” — a nie jak prawdę objawioną.
+
+### Panel GUI
+
+W zakładce **Rozpoznawanie** jest karta **Wyjaśnienie decyzji (XAI)**. Wybierz
+twarz z listy (pojawia się, gdy model widzi twarz) i kliknij **Wyjaśnij
+decyzję**. Wyjaśnianie trwa zwykle poniżej sekundy na GPU, ale uruchamia się
+tylko na żądanie — nie przy każdej klatce. Panel pokazuje ranking kandydatów,
+galerię najbliższych wzorców i mapę okluzji.
+
+### Ważne: galeria wzorców wymaga ponownego treningu
+
+Metadane „z którego zdjęcia powstał prototyp” zapisuje dopiero nowa wersja
+skryptu `03_trenowanie_modelu.py` (pole `zrodla` w
+`models/wzorce_osob.json`). Starszy plik wzorców nadal działa: mapa okluzji i
+ranking są liczone, ale galeria miniatur będzie pusta. Aby ją zobaczyć,
+uruchom trening ponownie (panel: **Trening** albo
+`python 03_trenowanie_modelu.py`).
+
+### Co zapisuje skrypt?
+
+- `models/xai/raport_xai.json` — wynik ostatniego wyjaśnienia (osoba,
+  podobieństwo, próg, ranking, mapa, najbliższe wzorce),
+- `models/xai/wyjasnienie_*.png` — wizualizacja: oryginał i mapa cieplna.
+
+Oba pliki są w `.gitignore` (folder `models/`). Mapa okluzji nie jest
+dodatkowym zbiorem danych treningowych — to tylko diagnostyka.
+
+### Ćwiczenie
+
+1. Wyjaśnij zdjęcie, na którym model się myli. Czy najbliższe wzorce
+   pochodzą z tej samej osoby, czy z podobnie wyglądającej?
+2. Zasłoń ręką oczy i uruchom XAI ponownie. Czy najważniejszy obszar mapy
+   się zmienia?
+3. Porównaj mapę dla zdjęcia z `data/processed/train` i dla zdjęcia z
+   `data/raw_test` (trudnego). Czy model patrzy na te same fragmenty?
+
+> **Ograniczenie etyczne.** XAI pomaga zrozumieć model, ale nie czyni go
+> sprawiedliwym. Jeśli dane treningowe są jednostronne, wyjaśnienie może
+> pokazać, że model polega na przypadku (np. okularach albo tle) — i to jest
+> właśnie cenna informacja.
 
 ## Jak przygotować dobre materiały treningowe
 
